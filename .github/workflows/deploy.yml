@@ -1,0 +1,100 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - '**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Backend to Server
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
+        run: |
+          ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
+            set -e
+            echo "🚀 Starting backend deployment..."
+            
+            # Navigate to backend directory
+            cd ${{ secrets.BACKEND_DEPLOY_PATH }} || exit 1
+            
+            # Load NVM
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            
+            # Pull latest code
+            echo "📥 Pulling latest code..."
+            git fetch origin
+            git reset --hard origin/main || git reset --hard origin/master
+            
+            # Install/update dependencies
+            echo "📦 Installing dependencies..."
+            npm ci --production
+            
+            # Validate environment
+            echo "✅ Validating environment..."
+            npm run validate-env || true
+            
+            # Restart application with PM2
+            echo "🔄 Restarting application..."
+            pm2 restart sxrx-backend || pm2 start src/index.js --name sxrx-backend
+            
+            # Save PM2 configuration
+            pm2 save
+            
+            # Show status
+            echo "📊 Application status:"
+            pm2 status sxrx-backend
+            
+            echo "✅ Deployment completed!"
+          ENDSSH
+
+      - name: Verify Deployment
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          echo "🔍 Verifying deployment..."
+          ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            pm2 status sxrx-backend
+            pm2 logs sxrx-backend --lines 20 --nostream
+          ENDSSH
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 Backend Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Backend deployment completed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Server:** ${{ secrets.SERVER_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deploy Path:** ${{ secrets.BACKEND_DEPLOY_PATH }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check PM2 logs on server for details." >> $GITHUB_STEP_SUMMARY
+
