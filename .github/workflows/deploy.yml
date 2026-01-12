@@ -117,14 +117,26 @@ jobs:
             echo "Initial PATH: $PATH"
             echo ""
             
-            # Try multiple NVM locations and load it
-            NVM_LOADED=false
-            echo "Checking for NVM installation..."
-            echo "  Current user: $(whoami)"
-            echo "  HOME: $HOME"
-            
-            # First, list what's in common NVM locations to debug
-            echo "  Checking NVM locations..."
+            # On Ubuntu, check for system-installed Node.js/npm first (common via apt)
+            echo "Checking for system-installed Node.js/npm (Ubuntu apt packages)..."
+            if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+              echo "✅ Found system-installed Node.js and npm"
+              echo "  Node.js: $(node --version 2>/dev/null || echo 'unknown')"
+              echo "  npm: $(npm --version 2>/dev/null || echo 'unknown')"
+              echo "  Node.js path: $(which node)"
+              echo "  npm path: $(which npm)"
+              echo "✅ Using system-installed Node.js/npm"
+            else
+              echo "  System Node.js/npm not found, checking NVM..."
+              
+              # Try multiple NVM locations and load it
+              NVM_LOADED=false
+              echo "Checking for NVM installation..."
+              echo "  Current user: $(whoami)"
+              echo "  HOME: $HOME"
+              
+              # First, list what's in common NVM locations to debug
+              echo "  Checking NVM locations..."
             for nvm_path in "$HOME/.nvm" "/root/.nvm" "/usr/local/nvm" "/opt/nvm"; do
               if [ -d "$nvm_path" ]; then
                 echo "  $nvm_path exists, contents:"
@@ -290,12 +302,24 @@ jobs:
               echo "  NVM_LOADED: $NVM_LOADED"
               echo "  NVM_DIR: ${NVM_DIR:-not set}"
             fi
+            fi  # Close the else block for system Node.js check
             
             echo ""
             
             # Final check if npm is available
             if ! command -v npm >/dev/null 2>&1; then
+              echo ""
               echo "⚠️ npm still not found, trying manual search..."
+              
+              # On Ubuntu, check common apt-installed locations
+              echo "  Checking Ubuntu apt package locations..."
+              for apt_path in /usr/bin /usr/local/bin; do
+                if [ -f "$apt_path/node" ] && [ -f "$apt_path/npm" ]; then
+                  export PATH="$apt_path:$PATH"
+                  echo "  ✅ Found node/npm in $apt_path, added to PATH"
+                  break
+                fi
+              done
               
               # Try to find node/npm in NVM directories manually
               if [ -n "$NVM_DIR" ] && [ -d "$NVM_DIR/versions/node" ]; then
@@ -391,10 +415,19 @@ jobs:
                   fi
                 fi
                 echo ""
-                echo "💡 Please ensure Node.js and npm are installed on the server."
-                echo "   You can install via:"
-                echo "   - NVM: nvm install --lts && nvm use --lts"
-                echo "   - System: sudo apt-get install nodejs npm (Ubuntu/Debian)"
+                echo "💡 Please ensure Node.js and npm are installed on the server (Ubuntu)."
+                echo "   Recommended installation methods:"
+                echo ""
+                echo "   1. Using NodeSource repository (recommended for Ubuntu):"
+                echo "      curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
+                echo "      sudo apt-get install -y nodejs"
+                echo ""
+                echo "   2. Using apt (may have older version):"
+                echo "      sudo apt-get update"
+                echo "      sudo apt-get install -y nodejs npm"
+                echo ""
+                echo "   3. Using NVM (if NVM is properly installed):"
+                echo "      nvm install --lts && nvm use --lts"
                 exit 1
               fi
             fi
