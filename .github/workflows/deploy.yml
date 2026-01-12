@@ -120,46 +120,104 @@ jobs:
             # Try multiple NVM locations and load it
             NVM_LOADED=false
             echo "Checking for NVM installation..."
+            echo "  Current user: $(whoami)"
+            echo "  HOME: $HOME"
             
+            # Try to load NVM from a given path
             # Check $HOME/.nvm first
-            if [ -f "$HOME/.nvm/nvm.sh" ]; then
-              echo "  Found NVM at: $HOME/.nvm/nvm.sh"
+            if [ -e "$HOME/.nvm/nvm.sh" ]; then
+              echo "  Found NVM script at: $HOME/.nvm/nvm.sh"
               export NVM_DIR="$HOME/.nvm"
+              echo "  NVM_DIR set to: $NVM_DIR"
               echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh"; then
+              if \. "$NVM_DIR/nvm.sh" 2>&1; then
                 NVM_LOADED=true
                 echo "✅ NVM loaded from $HOME/.nvm"
               else
                 echo "⚠️ Failed to source NVM script"
               fi
-            elif [ -f "/usr/local/nvm/nvm.sh" ]; then
-              echo "  Found NVM at: /usr/local/nvm/nvm.sh"
+            # Check root's NVM installation (common if installed as root)
+            elif [ "$(whoami)" != "root" ] && [ -e "/root/.nvm/nvm.sh" ]; then
+              echo "  Found NVM script at: /root/.nvm/nvm.sh (root's installation)"
+              export NVM_DIR="/root/.nvm"
+              echo "  NVM_DIR set to: $NVM_DIR"
+              echo "  Sourcing NVM script..."
+              if \. "$NVM_DIR/nvm.sh" 2>&1; then
+                NVM_LOADED=true
+                echo "✅ NVM loaded from /root/.nvm"
+              else
+                echo "⚠️ Failed to source NVM script"
+              fi
+            # Check system-wide locations
+            elif [ -e "/usr/local/nvm/nvm.sh" ]; then
+              echo "  Found NVM script at: /usr/local/nvm/nvm.sh"
               export NVM_DIR="/usr/local/nvm"
               echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh"; then
+              if \. "$NVM_DIR/nvm.sh" 2>&1; then
                 NVM_LOADED=true
                 echo "✅ NVM loaded from /usr/local/nvm"
               else
                 echo "⚠️ Failed to source NVM script"
               fi
-            elif [ -f "/opt/nvm/nvm.sh" ]; then
-              echo "  Found NVM at: /opt/nvm/nvm.sh"
+            elif [ -e "/opt/nvm/nvm.sh" ]; then
+              echo "  Found NVM script at: /opt/nvm/nvm.sh"
               export NVM_DIR="/opt/nvm"
               echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh"; then
+              if \. "$NVM_DIR/nvm.sh" 2>&1; then
                 NVM_LOADED=true
                 echo "✅ NVM loaded from /opt/nvm"
               else
                 echo "⚠️ Failed to source NVM script"
               fi
             else
-              echo "  ⚠️ NVM script not found in common locations"
-              echo "  Checking: $HOME/.nvm/nvm.sh"
-              [ -f "$HOME/.nvm/nvm.sh" ] && echo "    - Exists" || echo "    - Not found"
-              echo "  Checking: /usr/local/nvm/nvm.sh"
-              [ -f "/usr/local/nvm/nvm.sh" ] && echo "    - Exists" || echo "    - Not found"
-              echo "  Checking: /opt/nvm/nvm.sh"
-              [ -f "/opt/nvm/nvm.sh" ] && echo "    - Exists" || echo "    - Not found"
+              echo "  ⚠️ NVM script not found in common locations, searching..."
+              
+              # List what's actually in $HOME/.nvm if it exists
+              if [ -d "$HOME/.nvm" ]; then
+                echo "  $HOME/.nvm directory exists, contents:"
+                ls -la "$HOME/.nvm" 2>/dev/null | head -15 || echo "    (cannot list)"
+                # Check if nvm.sh exists but maybe with different case or as symlink
+                if [ -e "$HOME/.nvm/nvm.sh" ]; then
+                  echo "  Found nvm.sh (as any file type) at: $HOME/.nvm/nvm.sh"
+                  export NVM_DIR="$HOME/.nvm"
+                  if \. "$NVM_DIR/nvm.sh" 2>&1; then
+                    NVM_LOADED=true
+                    echo "✅ NVM loaded from $HOME/.nvm"
+                  fi
+                fi
+              fi
+              
+              # Check root's .nvm if we're not root
+              if [ "$(whoami)" != "root" ] && [ -d "/root/.nvm" ]; then
+                echo "  /root/.nvm directory exists, checking..."
+                echo "  Contents:"
+                ls -la "/root/.nvm" 2>/dev/null | head -15 || echo "    (cannot list)"
+                if [ -e "/root/.nvm/nvm.sh" ]; then
+                  echo "  Found nvm.sh in root's installation, trying to use it..."
+                  export NVM_DIR="/root/.nvm"
+                  if \. "$NVM_DIR/nvm.sh" 2>&1; then
+                    NVM_LOADED=true
+                    echo "✅ NVM loaded from /root/.nvm"
+                  fi
+                fi
+              fi
+              
+              # Search for nvm.sh in common locations using find
+              echo "  Searching for nvm.sh in filesystem..."
+              for search_path in "$HOME/.nvm" "/root/.nvm" "/usr/local/nvm" "/opt/nvm" "/usr/share/nvm"; do
+                if [ -d "$search_path" ]; then
+                  found_script=$(find "$search_path" -maxdepth 2 -name "nvm.sh" -type f 2>/dev/null | head -1)
+                  if [ -n "$found_script" ] && [ "$found_script" != "$HOME/.nvm/nvm.sh" ] && [ "$found_script" != "/root/.nvm/nvm.sh" ]; then
+                    echo "  Found nvm.sh at: $found_script"
+                    export NVM_DIR="$(dirname "$found_script")"
+                    if \. "$found_script" 2>&1; then
+                      NVM_LOADED=true
+                      echo "✅ NVM loaded from $NVM_DIR"
+                      break
+                    fi
+                  fi
+                fi
+              done
               
               # If NVM_DIR is set but script not found, check if directory exists and has node versions
               if [ -n "${NVM_DIR:-}" ] && [ -d "${NVM_DIR}" ]; then
