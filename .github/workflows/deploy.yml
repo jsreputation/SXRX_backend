@@ -41,20 +41,63 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << ENDSSH
             set -e
             
-            cd ${DEPLOY_PATH}
+            # Validate deployment path
+            if [ -z "${DEPLOY_PATH}" ]; then
+              echo "❌ Error: DEPLOY_PATH is not set"
+              exit 1
+            fi
+            
+            # Create deployment directory if it doesn't exist
+            if [ ! -d "${DEPLOY_PATH}" ]; then
+              echo "📁 Creating deployment directory: ${DEPLOY_PATH}"
+              mkdir -p ${DEPLOY_PATH}
+            fi
+            
+            # Verify directory was created and is accessible
+            if [ ! -d "${DEPLOY_PATH}" ]; then
+              echo "❌ Error: Failed to create or access deployment directory: ${DEPLOY_PATH}"
+              exit 1
+            fi
+            
+            cd ${DEPLOY_PATH} || {
+              echo "❌ Error: Failed to change to directory: ${DEPLOY_PATH}"
+              exit 1
+            }
+            
+            echo "✅ Current directory: $(pwd)"
+            
+            # Initialize git repository if it doesn't exist
+            if [ ! -d ".git" ]; then
+              echo "🔧 Initializing git repository..."
+              git init
+              git remote add origin https://github.com/jsreputation/SXRX_backend.git || git remote set-url origin https://github.com/jsreputation/SXRX_backend.git
+              git branch -M main || true
+            fi
             
             # Ensure git remote uses HTTPS (not SSH)
             git remote set-url origin https://github.com/jsreputation/SXRX_backend.git || true
             
             # If token is provided via workflow, use it; otherwise rely on server's stored token
             if [ -n "${GITHUB_TOKEN}" ]; then
+              echo "🔑 Using GitHub token from workflow"
               git remote set-url origin https://${GITHUB_TOKEN}@github.com/jsreputation/SXRX_backend.git
+            else
+              echo "ℹ️ Using server's stored GitHub credentials"
             fi
             
             # Pull latest code
             echo "Pulling latest code from GitHub..."
-            git fetch origin
-            git reset --hard origin/main
+            if git fetch origin; then
+              git reset --hard origin/main || git pull origin main
+              echo "✅ Code updated successfully"
+            else
+              echo "⚠️ Git fetch failed - checking if repository is empty or needs initial clone"
+              if [ -z "$(git ls-remote origin main 2>/dev/null)" ]; then
+                echo "⚠️ Repository appears to be empty or branch doesn't exist"
+              else
+                echo "⚠️ Git fetch failed - will try to continue with existing code"
+              fi
+            fi
             
             # Load NVM
             export NVM_DIR="$HOME/.nvm"
