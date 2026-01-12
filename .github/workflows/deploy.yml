@@ -138,49 +138,42 @@ jobs:
             done
             echo ""
             
-            # Try to load NVM from a given path (check for readable file, not just existence)
+            # Try to load NVM from a given path - verify file exists RIGHT before sourcing
             # Check $HOME/.nvm first
+            NVM_SCRIPT=""
             if [ -f "$HOME/.nvm/nvm.sh" ] && [ -r "$HOME/.nvm/nvm.sh" ]; then
-              echo "  ✅ Found readable NVM script at: $HOME/.nvm/nvm.sh"
-              export NVM_DIR="$HOME/.nvm"
-              echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh" 2>&1; then
-                NVM_LOADED=true
-                echo "✅ NVM loaded from $HOME/.nvm"
-              else
-                echo "⚠️ Failed to source NVM script (exit code: $?)"
-              fi
+              NVM_SCRIPT="$HOME/.nvm/nvm.sh"
             # Check root's NVM installation (common if installed as root)
             elif [ "$(whoami)" != "root" ] && [ -f "/root/.nvm/nvm.sh" ] && [ -r "/root/.nvm/nvm.sh" ]; then
-              echo "  ✅ Found readable NVM script at: /root/.nvm/nvm.sh (root's installation)"
-              export NVM_DIR="/root/.nvm"
-              echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh" 2>&1; then
-                NVM_LOADED=true
-                echo "✅ NVM loaded from /root/.nvm"
-              else
-                echo "⚠️ Failed to source NVM script (exit code: $?)"
-              fi
+              NVM_SCRIPT="/root/.nvm/nvm.sh"
             # Check system-wide locations
             elif [ -f "/usr/local/nvm/nvm.sh" ] && [ -r "/usr/local/nvm/nvm.sh" ]; then
-              echo "  ✅ Found readable NVM script at: /usr/local/nvm/nvm.sh"
-              export NVM_DIR="/usr/local/nvm"
-              echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh" 2>&1; then
-                NVM_LOADED=true
-                echo "✅ NVM loaded from /usr/local/nvm"
-              else
-                echo "⚠️ Failed to source NVM script (exit code: $?)"
-              fi
+              NVM_SCRIPT="/usr/local/nvm/nvm.sh"
             elif [ -f "/opt/nvm/nvm.sh" ] && [ -r "/opt/nvm/nvm.sh" ]; then
-              echo "  ✅ Found readable NVM script at: /opt/nvm/nvm.sh"
-              export NVM_DIR="/opt/nvm"
-              echo "  Sourcing NVM script..."
-              if \. "$NVM_DIR/nvm.sh" 2>&1; then
-                NVM_LOADED=true
-                echo "✅ NVM loaded from /opt/nvm"
+              NVM_SCRIPT="/opt/nvm/nvm.sh"
+            fi
+            
+            if [ -n "$NVM_SCRIPT" ]; then
+              echo "  ✅ Found NVM script: $NVM_SCRIPT"
+              # Double-check RIGHT before sourcing
+              if [ ! -f "$NVM_SCRIPT" ]; then
+                echo "  ❌ ERROR: File disappeared! $NVM_SCRIPT does not exist"
+              elif [ ! -r "$NVM_SCRIPT" ]; then
+                echo "  ❌ ERROR: File not readable! $NVM_SCRIPT"
               else
-                echo "⚠️ Failed to source NVM script (exit code: $?)"
+                export NVM_DIR="$(dirname "$NVM_SCRIPT")"
+                echo "  NVM_DIR set to: $NVM_DIR"
+                echo "  File verified, sourcing..."
+                # Use absolute path to be sure
+                if \. "$NVM_SCRIPT" 2>&1; then
+                  NVM_LOADED=true
+                  echo "✅ NVM loaded successfully from $NVM_DIR"
+                else
+                  echo "⚠️ Failed to source NVM script"
+                  echo "  Error details:"
+                  ls -la "$NVM_SCRIPT" 2>&1 || echo "    Cannot stat file"
+                  file "$NVM_SCRIPT" 2>&1 || echo "    Cannot determine file type"
+                fi
               fi
             else
               echo "  ⚠️ NVM script not found as readable file, searching with find..."
