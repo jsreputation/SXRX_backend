@@ -99,9 +99,79 @@ jobs:
               fi
             fi
             
-            # Load NVM
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            # Load NVM and setup Node.js environment
+            echo "🔧 Setting up Node.js environment..."
+            
+            # Source shell profile files to load environment (NVM, PATH, etc.)
+            # SSH sessions don't automatically load .bashrc, so we need to source it
+            if [ -s "$HOME/.bashrc" ]; then
+              source "$HOME/.bashrc" 2>/dev/null || true
+            fi
+            if [ -s "$HOME/.bash_profile" ]; then
+              source "$HOME/.bash_profile" 2>/dev/null || true
+            fi
+            if [ -s "$HOME/.profile" ]; then
+              source "$HOME/.profile" 2>/dev/null || true
+            fi
+            
+            # Try multiple NVM locations and load it
+            if [ -s "$HOME/.nvm/nvm.sh" ]; then
+              export NVM_DIR="$HOME/.nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              echo "✅ NVM loaded from $HOME/.nvm"
+            elif [ -s "/usr/local/nvm/nvm.sh" ]; then
+              export NVM_DIR="/usr/local/nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              echo "✅ NVM loaded from /usr/local/nvm"
+            fi
+            
+            # Use nvm to load default node version if available
+            if command -v nvm &> /dev/null; then
+              nvm use default 2>/dev/null || nvm use node 2>/dev/null || true
+            fi
+            
+            # Check if npm is available
+            if ! command -v npm &> /dev/null; then
+              echo "⚠️ npm not found in PATH, trying to locate..."
+              
+              # Try to find npm in common locations and add to PATH
+              NPM_PATH=$(command -v npm 2>/dev/null || \
+                find "$HOME/.nvm" -name npm 2>/dev/null | head -1 || \
+                find /usr/local -name npm 2>/dev/null | head -1 || \
+                find /usr -name npm 2>/dev/null | head -1 || \
+                echo "")
+              
+              if [ -n "$NPM_PATH" ]; then
+                NPM_DIR=$(dirname "$NPM_PATH")
+                export PATH="$NPM_DIR:$PATH"
+                echo "✅ Found npm at: $NPM_PATH"
+                echo "✅ Added to PATH: $NPM_DIR"
+              else
+                echo "❌ Error: npm command not found"
+                echo "Current PATH: $PATH"
+                echo "Current USER: $(whoami)"
+                echo "Current HOME: $HOME"
+                echo "Checking for node/npm installations..."
+                which node 2>/dev/null || echo "node not found in PATH"
+                which npm 2>/dev/null || echo "npm not found in PATH"
+                echo "Searching for npm..."
+                find "$HOME" -name npm -type f 2>/dev/null | head -5 || echo "npm not found in $HOME"
+                find /usr/local -name npm -type f 2>/dev/null | head -5 || echo "npm not found in /usr/local"
+                exit 1
+              fi
+            fi
+            
+            # Verify npm is now available
+            if ! command -v npm &> /dev/null; then
+              echo "❌ Error: npm still not found after PATH update"
+              echo "Current PATH: $PATH"
+              exit 1
+            fi
+            
+            # Display Node.js and npm versions
+            echo "✅ Node.js version: $(node --version 2>/dev/null || echo 'unknown')"
+            echo "✅ npm version: $(npm --version 2>/dev/null || echo 'unknown')"
+            echo "✅ npm location: $(which npm)"
             
             # Install/update dependencies
             echo "Installing dependencies..."
