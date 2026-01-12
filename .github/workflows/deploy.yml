@@ -114,90 +114,119 @@ jobs:
             
             # Load NVM and setup Node.js environment
             echo "🔧 Setting up Node.js environment..."
-            echo "Current PATH: $PATH"
+            echo "Initial PATH: $PATH"
             
             # Try multiple NVM locations and load it
             NVM_LOADED=false
             if [ -s "$HOME/.nvm/nvm.sh" ]; then
               export NVM_DIR="$HOME/.nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              NVM_LOADED=true
               echo "✅ NVM loaded from $HOME/.nvm"
             elif [ -s "/usr/local/nvm/nvm.sh" ]; then
               export NVM_DIR="/usr/local/nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              NVM_LOADED=true
               echo "✅ NVM loaded from /usr/local/nvm"
             elif [ -s "/opt/nvm/nvm.sh" ]; then
               export NVM_DIR="/opt/nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              NVM_LOADED=true
               echo "✅ NVM loaded from /opt/nvm"
             fi
             
-            # Use nvm to load default node version if available
-            if [ "$NVM_LOADED" = true ] && command -v nvm &> /dev/null; then
-              nvm use default 2>/dev/null || nvm use node 2>/dev/null || nvm use --lts 2>/dev/null || true
-              echo "✅ NVM version activated"
-            fi
-            
-            # Check if npm is available (try system-installed first, then NVM)
-            if command -v npm &> /dev/null; then
-              echo "✅ npm found in PATH: $(which npm)"
-            else
-              echo "⚠️ npm not found in PATH, searching..."
+            # If NVM is loaded, use it to activate node/npm
+            if [ "$NVM_LOADED" = true ]; then
+              echo "NVM_DIR: $NVM_DIR"
               
-              # Try to find npm in NVM directories
-              if [ "$NVM_LOADED" = true ] && [ -n "$NVM_DIR" ]; then
-                # Find the active node version's npm
-                if [ -d "$NVM_DIR/versions/node" ]; then
-                  NODE_VERSION=$(ls -t "$NVM_DIR/versions/node" 2>/dev/null | head -1)
-                  if [ -n "$NODE_VERSION" ] && [ -f "$NVM_DIR/versions/node/$NODE_VERSION/bin/npm" ]; then
-                    export PATH="$NVM_DIR/versions/node/$NODE_VERSION/bin:$PATH"
-                    echo "✅ Found npm in NVM: $NVM_DIR/versions/node/$NODE_VERSION/bin/npm"
+              # Check if nvm function is available (nvm is a function, not a command)
+              if type nvm >/dev/null 2>&1; then
+                echo "✅ NVM function is available"
+                
+                # List installed node versions
+                echo "Checking installed Node.js versions..."
+                nvm list 2>&1 || echo "No versions listed"
+                
+                # Try to use default, then node, then lts, then install lts if nothing exists
+                if nvm use default 2>/dev/null; then
+                  echo "✅ Using default Node.js version"
+                elif nvm use node 2>/dev/null; then
+                  echo "✅ Using 'node' alias"
+                elif nvm use --lts 2>/dev/null; then
+                  echo "✅ Using LTS Node.js version"
+                else
+                  echo "⚠️ No active Node.js version found, checking available versions..."
+                  INSTALLED_VERSIONS=$(nvm list --no-colors 2>/dev/null | grep -v "N/A" | head -1)
+                  if [ -n "$INSTALLED_VERSIONS" ]; then
+                    # Use the first installed version
+                    FIRST_VERSION=$(nvm list --no-colors 2>/dev/null | grep -v "N/A" | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+                    if [ -n "$FIRST_VERSION" ]; then
+                      nvm use "$FIRST_VERSION" 2>/dev/null && echo "✅ Using Node.js version: $FIRST_VERSION"
+                    fi
+                  else
+                    echo "⚠️ No Node.js versions installed, installing LTS..."
+                    nvm install --lts && nvm use --lts
+                    echo "✅ Installed and activated LTS Node.js version"
                   fi
                 fi
-              fi
-              
-              # Try common system locations
-              if ! command -v npm &> /dev/null; then
-                for DIR in /usr/local/bin /usr/bin /opt/nodejs/bin "$HOME/.local/bin"; do
-                  if [ -f "$DIR/npm" ]; then
-                    export PATH="$DIR:$PATH"
-                    echo "✅ Found npm at: $DIR/npm"
-                    break
+                
+                # Verify node and npm are now available
+                if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+                  echo "✅ Node.js and npm are now available"
+                  echo "  Node.js: $(node --version)"
+                  echo "  npm: $(npm --version)"
+                  echo "  Node.js path: $(which node)"
+                  echo "  npm path: $(which npm)"
+                  echo "Updated PATH: $PATH"
+                else
+                  echo "⚠️ Node.js/npm still not in PATH after NVM activation"
+                  # Manually add to PATH if needed
+                  if [ -n "$NVM_DIR" ] && [ -d "$NVM_DIR/versions/node" ]; then
+                    ACTIVE_NODE=$(nvm current 2>/dev/null)
+                    if [ -n "$ACTIVE_NODE" ] && [ "$ACTIVE_NODE" != "none" ] && [ "$ACTIVE_NODE" != "N/A" ]; then
+                      NODE_BIN="$NVM_DIR/versions/node/$ACTIVE_NODE/bin"
+                      if [ -d "$NODE_BIN" ]; then
+                        export PATH="$NODE_BIN:$PATH"
+                        echo "✅ Manually added to PATH: $NODE_BIN"
+                      fi
+                    fi
                   fi
-                done
-              fi
-              
-              # Final check
-              if ! command -v npm &> /dev/null; then
-                echo "❌ Error: npm command not found"
-                echo "Current PATH: $PATH"
-                echo "Current USER: $(whoami)"
-                echo "Current HOME: $HOME"
-                echo "NVM_DIR: ${NVM_DIR:-not set}"
-                echo ""
-                echo "Checking for node/npm installations..."
-                which node 2>/dev/null || echo "  ❌ node not found in PATH"
-                which npm 2>/dev/null || echo "  ❌ npm not found in PATH"
-                echo ""
-                echo "Searching for npm..."
-                find "$HOME/.nvm" -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in $HOME/.nvm"
-                find /usr/local -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in /usr/local"
-                find /usr/bin -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in /usr/bin"
-                echo ""
-                echo "💡 Please ensure Node.js and npm are installed on the server."
-                echo "   You can install via:"
-                echo "   - NVM: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
-                echo "   - System: sudo apt-get install nodejs npm (Ubuntu/Debian)"
-                exit 1
+                fi
+              else
+                echo "⚠️ NVM script loaded but nvm function not available"
               fi
             fi
             
-            # Display Node.js and npm versions
+            # Final check if npm is available
+            if ! command -v npm >/dev/null 2>&1; then
+              echo "❌ Error: npm command not found after NVM setup"
+              echo "Current PATH: $PATH"
+              echo "Current USER: $(whoami)"
+              echo "Current HOME: $HOME"
+              echo "NVM_DIR: ${NVM_DIR:-not set}"
+              echo ""
+              echo "Checking for node/npm installations..."
+              which node 2>/dev/null || echo "  ❌ node not found in PATH"
+              which npm 2>/dev/null || echo "  ❌ npm not found in PATH"
+              echo ""
+              if [ "$NVM_LOADED" = true ] && [ -n "$NVM_DIR" ]; then
+                echo "NVM directories:"
+                ls -la "$NVM_DIR/versions/node" 2>/dev/null | head -10 || echo "  No node versions directory found"
+              fi
+              echo ""
+              echo "💡 Please ensure Node.js and npm are installed on the server."
+              echo "   You can install via:"
+              echo "   - NVM: nvm install --lts && nvm use --lts"
+              echo "   - System: sudo apt-get install nodejs npm (Ubuntu/Debian)"
+              exit 1
+            fi
+            
             echo ""
-            echo "✅ Node.js version: $(node --version 2>/dev/null || echo 'unknown')"
-            echo "✅ npm version: $(npm --version 2>/dev/null || echo 'unknown')"
-            echo "✅ npm location: $(which npm)"
-            echo "✅ Final PATH: $PATH"
+            echo "✅ Node.js environment ready:"
+            echo "  Node.js: $(node --version)"
+            echo "  npm: $(npm --version)"
+            echo "  npm location: $(which npm)"
+            echo "  Final PATH: $PATH"
             echo ""
             
             # Install/update dependencies
