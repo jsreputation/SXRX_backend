@@ -444,6 +444,26 @@ jobs:
             echo "Installing dependencies..."
             npm ci --production
             
+            # Check and install PM2 if not available
+            echo ""
+            echo "Checking for PM2..."
+            if ! command -v pm2 >/dev/null 2>&1; then
+              echo "  PM2 not found, installing globally..."
+              npm install -g pm2
+              if command -v pm2 >/dev/null 2>&1; then
+                echo "✅ PM2 installed successfully"
+                echo "  PM2 version: $(pm2 --version 2>/dev/null || echo 'unknown')"
+                echo "  PM2 path: $(which pm2)"
+              else
+                echo "⚠️ PM2 installation may have failed, but continuing..."
+              fi
+            else
+              echo "✅ PM2 is already installed"
+              echo "  PM2 version: $(pm2 --version 2>/dev/null || echo 'unknown')"
+              echo "  PM2 path: $(which pm2)"
+            fi
+            echo ""
+            
             # Restart backend with PM2
             echo "Restarting backend..."
             pm2 restart sxrx-backend || pm2 start src/index.js --name sxrx-backend
