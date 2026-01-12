@@ -200,7 +200,21 @@ function buildPatientPayload(customerData, mapping) {
   };
 }
 
-// Main controller function for Shopify appointment booking
+/**
+ * Main controller function for Shopify appointment booking
+ * 
+ * This endpoint handles appointment booking requests that may come from:
+ * - Shopify App Proxy (if configured)
+ * - Direct API calls from frontend
+ * - Custom integration flows
+ * 
+ * NOTE: The PRIMARY Cowlendar integration method is through Shopify Order Created webhook
+ * (see billingController.handleShopifyOrderCreated). This endpoint is for alternative
+ * integration methods or direct booking requests.
+ * 
+ * Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
+ * The backend will use Cowlendar-provided links if available in the appointment data.
+ */
 exports.handleShopifyAppointment = async (req, res) => {
   try {
     // Verify the request method
@@ -325,13 +339,29 @@ exports.handleShopifyAppointment = async (req, res) => {
           const startTime = new Date(appointment.start_time);
           const endTime = new Date(startTime.getTime() + (appointment.duration || 30) * 60000); // Default 30 min
           
-          // Generate Google Meet link for telemedicine
-          const meetingDetails = googleMeetService.generateMeetLink({
-            patientName: `${customer.firstName || ''} ${customer.lastName || ''}`.trim() || customer.email,
-            doctorName: 'Medical Director',
-            appointmentId: `COWLENDAR-${Date.now()}`,
-            scheduledTime: startTime.toISOString()
-          });
+          // Use meeting link from Cowlendar if available (Cowlendar can generate Google Meet/Zoom links)
+          const cowlendarMeetingLink = 
+            appointment.meeting_link || 
+            appointment.meetingLink || 
+            appointment.video_url || 
+            appointment.videoUrl || 
+            appointment.google_meet_link || 
+            appointment.googleMeetLink ||
+            appointment.zoom_link ||
+            appointment.zoomLink ||
+            null;
+
+          // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
+          let meetingLink = cowlendarMeetingLink;
+          if (!meetingLink) {
+            const meetingDetails = googleMeetService.generateMeetLink({
+              patientName: `${customer.firstName || ''} ${customer.lastName || ''}`.trim() || customer.email,
+              doctorName: 'Medical Director',
+              appointmentId: `COWLENDAR-${Date.now()}`,
+              scheduledTime: startTime.toISOString()
+            });
+            meetingLink = meetingDetails ? meetingDetails.meetLink : null;
+          }
 
           const appointmentData = {
             appointmentName: appointment.service_name || 'Telemedicine Consultation',
@@ -342,16 +372,18 @@ exports.handleShopifyAppointment = async (req, res) => {
             patientId,
             practiceId: mapping.practiceId,
             providerId: mapping.defaultProviderId,
-            notes: `Cowlendar appointment. Google Meet: ${meetingDetails.meetLink}`,
+            notes: meetingLink ? `Cowlendar appointment. Meeting link: ${meetingLink}` : 'Cowlendar appointment.',
             isRecurring: false
           };
 
           const tebraAppointment = await tebraService.createAppointment(appointmentData);
           console.log(`✅ [COWLENDAR] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
 
-          // Store meeting link for response
+          // Store meeting link for response (if available)
           appointment.tebraAppointmentId = tebraAppointment.id || tebraAppointment.ID;
-          appointment.meetingLink = meetingDetails.meetLink;
+          if (meetingLink) {
+            appointment.meetingLink = meetingLink;
+          }
         } catch (apptError) {
           console.error('Error creating Tebra appointment:', apptError?.message || apptError);
           // Continue with response even if appointment creation fails

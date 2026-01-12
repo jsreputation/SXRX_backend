@@ -135,10 +135,6 @@ Please review the patient chart in Tebra and schedule a consultation.
       });
     }
 
-    // SMS notification can be added here if Twilio is configured
-    // if (phone && twilioService) {
-    //   await twilioService.sendSMS(phone, `Consultation needed: ${patientName} (${mapping.state}). Check email for details.`);
-    // }
   } catch (error) {
     console.error('Error notifying doctor:', error);
     // Don't fail the webhook if notification fails
@@ -163,7 +159,7 @@ async function getAvailableSlots(mapping, options = {}) {
 
 async function createTelemedicineAppointment(patientId, mapping, scheduledTime) {
   try {
-    // Generate Google Meet link
+    // Generate Google Meet link (disabled)
     const meetingDetails = googleMeetService.generateMeetLink({
       patientName: 'Patient', // You might want to get this from patient data
       doctorName: 'Medical Director',
@@ -181,7 +177,7 @@ async function createTelemedicineAppointment(patientId, mapping, scheduledTime) 
       patientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
-      notes: `Telemedicine consultation. Google Meet: ${meetingDetails.meetLink}`,
+      notes: meetingDetails ? `Telemedicine consultation. Google Meet: ${meetingDetails.meetLink}` : 'Telemedicine consultation.',
       isRecurring: false
     };
 

@@ -103,6 +103,10 @@ router.post('/shopify/orders/paid', express.json({ limit: '1mb' }), billingContr
 router.post('/shopify/orders/created', express.json({ limit: '1mb' }), billingController.handleShopifyOrderCreated);
 
 // Cowlendar webhook endpoints
+// NOTE: Cowlendar does NOT have direct webhook configuration in their app settings.
+// These endpoints are for potential future direct webhook support or manual API integration.
+// PRIMARY INTEGRATION: Cowlendar bookings are handled through Shopify Order Created webhook
+// (see billingController.handleShopifyOrderCreated at /webhooks/shopify/orders/created)
 const cowlendarWebhookController = require('../controllers/cowlendarWebhookController');
 router.post('/cowlendar/appointment-created', express.json({ limit: '1mb' }), cowlendarWebhookController.handleAppointmentCreated);
 router.post('/cowlendar/appointment-updated', express.json({ limit: '1mb' }), cowlendarWebhookController.handleAppointmentUpdated);

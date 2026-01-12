@@ -53,11 +53,6 @@ const optionalVars = {
   STRIPE_SECRET_KEY: 'Stripe secret key',
   STRIPE_WEBHOOK_SECRET: 'Stripe webhook secret',
   
-  // Twilio
-  TWILIO_ACCOUNT_SID: 'Twilio account SID',
-  TWILIO_AUTH_TOKEN: 'Twilio auth token',
-  TWILIO_PHONE_NUMBER: 'Twilio phone number',
-  
   // SendGrid
   SENDGRID_API_KEY: 'SendGrid API key',
   SENDGRID_FROM: 'SendGrid from email',

@@ -375,12 +375,27 @@ exports.handleShopifyOrderPaid = async (req, res) => {
 
 /**
  * Handle Shopify Order Created webhook
- * This is used to detect Cowlendar bookings that create Shopify orders
- * When Cowlendar creates a booking, it may create a Shopify order, and we need to:
- * 1. Detect if it's a Cowlendar booking (by product tags or order notes)
- * 2. Extract booking information
- * 3. Create/update patient in Tebra
- * 4. Create appointment in Tebra with Google Meet link
+ * 
+ * PRIMARY INTEGRATION METHOD for Cowlendar bookings.
+ * 
+ * IMPORTANT: Cowlendar does NOT have direct webhook configuration in their app settings.
+ * Integration works through Shopify Order Created webhook when Cowlendar creates orders.
+ * 
+ * When Cowlendar creates a booking:
+ * 1. Cowlendar may create a Shopify order (if configured to do so)
+ * 2. Shopify sends Order Created webhook to this endpoint
+ * 3. Backend detects if it's a Cowlendar booking (by product tags or order notes)
+ * 4. Backend extracts booking information from order properties/notes
+ * 5. Backend creates/updates patient in Tebra
+ * 6. Backend creates appointment in Tebra
+ * 7. Backend uses Cowlendar-provided meeting link if available (Elite plan)
+ *    Otherwise falls back to backend generation (currently disabled)
+ * 
+ * Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
+ * Meeting links may be included in:
+ * - Order line item properties (meeting_link, video_url, etc.)
+ * - Order notes (as URLs)
+ * - Direct webhook payload (if using direct webhook endpoint)
  */
 exports.handleShopifyOrderCreated = async (req, res) => {
   try {
@@ -393,9 +408,10 @@ exports.handleShopifyOrderCreated = async (req, res) => {
 
     // Check if this is a Cowlendar booking order
     // Cowlendar orders typically have:
-    // 1. Product tags containing "cowlendar" or "booking"
-    // 2. Order notes mentioning "Cowlendar" or "booking"
+    // 1. Product tags containing "cowlendar" or "booking" or "appointment"
+    // 2. Order notes mentioning "Cowlendar" or "booking" or "appointment"
     // 3. Line items with specific product tags
+    // 4. Line item properties with appointment data (appointment_date, start_time, etc.)
     const orderNote = (order.note || '').toLowerCase();
     const isCowlendarOrder = orderNote.includes('cowlendar') || 
                             orderNote.includes('booking') ||
@@ -509,39 +525,115 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     }
 
     // Extract appointment details from order
-    // Cowlendar may store booking info in order notes, metafields, or line item properties
+    // Cowlendar stores booking info in:
+    // 1. Order line item properties (appointment_date, start_time, booking_time, duration, etc.)
+    // 2. Order notes (may contain appointment details or meeting links)
+    // 3. Order metafields (if configured)
     let appointmentStartTime = order.created_at ? new Date(order.created_at) : new Date();
-    const appointmentDuration = 30; // Default 30 minutes
+    let appointmentDuration = 30; // Default 30 minutes
     
-    // Try to extract from order notes or line item properties
+    // Try to extract appointment time and duration from line item properties
     for (const item of lineItems) {
       const properties = item.properties || [];
-      const startTimeProp = properties.find(p => 
-        p.name === 'appointment_start' || 
-        p.name === 'start_time' || 
-        p.name === 'booking_time'
-      );
+      
+      // Look for appointment start time in various property names
+      const startTimeProp = properties.find(p => {
+        const name = (p.name || '').toLowerCase();
+        return name === 'appointment_start' || 
+               name === 'appointment_date' ||
+               name === 'start_time' || 
+               name === 'booking_time' ||
+               name === 'appointment_time' ||
+               name === 'scheduled_time';
+      });
       
       if (startTimeProp && startTimeProp.value) {
         try {
           const parsedTime = new Date(startTimeProp.value);
           if (!isNaN(parsedTime.getTime())) {
             appointmentStartTime = parsedTime;
+            console.log(`📅 [ORDER CREATED] Extracted appointment time from property: ${appointmentStartTime.toISOString()}`);
           }
         } catch (e) {
           console.warn('[ORDER CREATED] Failed to parse appointment time:', e?.message);
         }
       }
+      
+      // Look for appointment duration
+      const durationProp = properties.find(p => {
+        const name = (p.name || '').toLowerCase();
+        return name === 'duration' || 
+               name === 'appointment_duration' ||
+               name === 'booking_duration';
+      });
+      
+      if (durationProp && durationProp.value) {
+        const parsedDuration = parseInt(durationProp.value, 10);
+        if (!isNaN(parsedDuration) && parsedDuration > 0) {
+          appointmentDuration = parsedDuration;
+          console.log(`⏱️ [ORDER CREATED] Extracted appointment duration: ${appointmentDuration} minutes`);
+        }
+      }
+    }
+    
+    // Also check order note for appointment time (if not found in properties)
+    if (appointmentStartTime.getTime() === (order.created_at ? new Date(order.created_at).getTime() : new Date().getTime())) {
+      const noteMatch = order.note?.match(/(?:appointment|booking|scheduled).*?(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2})/i);
+      if (noteMatch) {
+        try {
+          const parsedTime = new Date(noteMatch[1]);
+          if (!isNaN(parsedTime.getTime())) {
+            appointmentStartTime = parsedTime;
+            console.log(`📅 [ORDER CREATED] Extracted appointment time from order note: ${appointmentStartTime.toISOString()}`);
+          }
+        } catch (e) {
+          // Ignore parsing errors
+        }
+      }
     }
 
-    // Generate Google Meet link
-    const googleMeetService = require('../services/googleMeetService');
-    const meetingDetails = googleMeetService.generateMeetLink({
-      patientName: `${shippingAddress?.first_name || order.customer?.first_name || ''} ${shippingAddress?.last_name || order.customer?.last_name || ''}`.trim() || email,
-      doctorName: 'Medical Director',
-      appointmentId: `COWLENDAR-ORDER-${shopifyOrderId}`,
-      scheduledTime: appointmentStartTime.toISOString()
-    });
+    // Check for meeting link from Cowlendar in order properties or notes
+    // Cowlendar may include meeting links in order line item properties or order notes
+    let cowlendarMeetingLink = null;
+    
+    // Check line item properties for meeting link
+    if (lineItems && lineItems.length > 0) {
+      for (const item of lineItems) {
+        if (item.properties) {
+          for (const prop of item.properties) {
+            const propName = (prop.name || '').toLowerCase();
+            const propValue = prop.value || '';
+            if ((propName.includes('meeting') || propName.includes('video') || propName.includes('link') || propName.includes('meet') || propName.includes('zoom')) && 
+                (propValue.includes('http') || propValue.includes('meet.google.com') || propValue.includes('zoom.us'))) {
+              cowlendarMeetingLink = propValue;
+              break;
+            }
+          }
+        }
+        if (cowlendarMeetingLink) break;
+      }
+    }
+    
+    // Check order note for meeting link
+    if (!cowlendarMeetingLink && order.note) {
+      const noteMatch = order.note.match(/(https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*)/i);
+      if (noteMatch) {
+        cowlendarMeetingLink = noteMatch[1];
+      }
+    }
+
+    // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
+    let meetingLink = cowlendarMeetingLink;
+    if (!meetingLink) {
+      const googleMeetService = require('../services/googleMeetService');
+      const meetingDetails = googleMeetService.generateMeetLink({
+        patientName: `${shippingAddress?.first_name || order.customer?.first_name || ''} ${shippingAddress?.last_name || order.customer?.last_name || ''}`.trim() || email,
+        doctorName: 'Medical Director',
+        appointmentId: `COWLENDAR-ORDER-${shopifyOrderId}`,
+        scheduledTime: appointmentStartTime.toISOString()
+      });
+      meetingLink = meetingDetails ? meetingDetails.meetLink : null;
+    }
 
     // Create appointment in Tebra
     const appointmentEndTime = new Date(appointmentStartTime.getTime() + appointmentDuration * 60000);
@@ -554,7 +646,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       patientId: tebraPatientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
-      notes: `Cowlendar booking from order ${shopifyOrderId}. Google Meet: ${meetingDetails.meetLink}`,
+      notes: meetingLink ? `Cowlendar booking from order ${shopifyOrderId}. Meeting link: ${meetingLink}` : `Cowlendar booking from order ${shopifyOrderId}.`,
       isRecurring: false
     };
 
@@ -564,7 +656,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     res.json({
       success: true,
       tebraAppointmentId: tebraAppointment.id || tebraAppointment.ID,
-      meetingLink: meetingDetails.meetLink,
+      meetingLink: meetingLink,
       patientId: tebraPatientId,
       message: 'Cowlendar booking synced to Tebra successfully'
     });

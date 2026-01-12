@@ -26,7 +26,6 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
 - **Shopify**: E-commerce platform for product sales and customer management
 - **Tebra/Kareo**: Electronic Health Records (EHR) and Practice Management System
 - **Stripe**: Payment processing and subscription management
-- **Twilio**: SMS notifications and communications
 - **Google Meet**: Telemedicine video consultations
 - **SendGrid**: Email notifications
 - **RevenueHunt**: Questionnaire and form submissions
@@ -78,7 +77,6 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
   - `stripe` (^18.3.0): Payment processing
   - `soap` (^1.3.0): SOAP client for Tebra/Kareo
   - `axios` (^1.6.0): HTTP client
-  - `twilio` (^4.10.0): SMS/communications
   - `@sendgrid/mail` (^7.7.0): Email service
 
 - **Utilities**
@@ -149,7 +147,7 @@ backend/
    - System checks provider availability
    - Appointment created in Tebra
    - Google Meet link generated
-   - Notifications sent via Twilio/SendGrid
+   - Notifications sent via SendGrid
 
 3. **Billing Flow**:
    - Monthly cron job processes due subscriptions
@@ -252,13 +250,6 @@ TEBRA_PROVIDER_ID_TX=texas-provider-id
 ```env
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
-```
-
-#### Twilio
-```env
-TWILIO_ACCOUNT_SID=your-account-sid
-TWILIO_AUTH_TOKEN=your-auth-token
-TWILIO_PHONE_NUMBER=+1234567890
 ```
 
 #### SendGrid

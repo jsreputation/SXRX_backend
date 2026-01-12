@@ -1,9 +1,11 @@
 // Google Meet link generation service
 // For telemedicine consultations
+// DISABLED: Google Meet link generation is currently disabled
 
 class GoogleMeetService {
   constructor() {
     this.baseUrl = 'https://meet.google.com';
+    this.enabled = false; // Google Meet generation is disabled
   }
 
   /**
@@ -13,9 +15,14 @@ class GoogleMeetService {
    * @param {string} options.doctorName - Doctor's name
    * @param {string} options.appointmentId - Appointment ID
    * @param {Date} options.scheduledTime - Scheduled appointment time
-   * @returns {Object} Meeting details with link
+   * @returns {Object|null} Meeting details with link, or null if disabled
    */
   generateMeetLink(options = {}) {
+    // Google Meet link generation is disabled
+    if (!this.enabled) {
+      console.log('Google Meet link generation is disabled');
+      return null;
+    }
     const { patientName, doctorName, appointmentId, scheduledTime } = options;
     
     // Generate a unique meeting code (in production, you might want to use Google Calendar API)

@@ -1,5 +1,15 @@
 // backend/src/controllers/cowlendarWebhookController.js
 // Handles Cowlendar webhook events for appointment creation/updates
+//
+// IMPORTANT: Cowlendar does NOT have direct webhook configuration in their app settings.
+// This endpoint is for potential future direct webhook support or manual API integration.
+// 
+// PRIMARY INTEGRATION: Cowlendar bookings are handled through Shopify Order Created webhook
+// (see billingController.handleShopifyOrderCreated)
+//
+// Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
+// The backend will use Cowlendar-provided links if available, otherwise falls back to
+// backend generation (currently disabled).
 
 const tebraService = require('../services/tebraService');
 const googleMeetService = require('../services/googleMeetService');
@@ -8,6 +18,16 @@ const providerMapping = require('../config/providerMapping');
 
 /**
  * Handle Cowlendar appointment created webhook
+ * 
+ * Note: This endpoint may not be used if Cowlendar doesn't support direct webhooks.
+ * Primary integration is through Shopify Order Created webhook.
+ * 
+ * Expected payload:
+ * {
+ *   appointment: { id, start_time, duration, service_name, meeting_link?, ... },
+ *   customer: { id, email, firstName, lastName, state, ... },
+ *   patient: { tebraPatientId? }
+ * }
  */
 exports.handleAppointmentCreated = async (req, res) => {
   try {
@@ -97,13 +117,30 @@ exports.handleAppointmentCreated = async (req, res) => {
     const duration = appointment.duration || 30; // minutes
     const endTime = new Date(startTime.getTime() + duration * 60000);
 
-    // Generate Google Meet link for telemedicine
-    const meetingDetails = googleMeetService.generateMeetLink({
-      patientName: `${customer.firstName || customer.first_name || ''} ${customer.lastName || customer.last_name || ''}`.trim() || customer.email,
-      doctorName: 'Medical Director',
-      appointmentId: `COWLENDAR-${appointment.id || Date.now()}`,
-      scheduledTime: startTime.toISOString()
-    });
+    // Use meeting link from Cowlendar if available (Cowlendar can generate Google Meet/Zoom links)
+    // Check common field names for meeting links from Cowlendar
+    const cowlendarMeetingLink = 
+      appointment.meeting_link || 
+      appointment.meetingLink || 
+      appointment.video_url || 
+      appointment.videoUrl || 
+      appointment.google_meet_link || 
+      appointment.googleMeetLink ||
+      appointment.zoom_link ||
+      appointment.zoomLink ||
+      null;
+
+    // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
+    let meetingLink = cowlendarMeetingLink;
+    if (!meetingLink) {
+      const meetingDetails = googleMeetService.generateMeetLink({
+        patientName: `${customer.firstName || customer.first_name || ''} ${customer.lastName || customer.last_name || ''}`.trim() || customer.email,
+        doctorName: 'Medical Director',
+        appointmentId: `COWLENDAR-${appointment.id || Date.now()}`,
+        scheduledTime: startTime.toISOString()
+      });
+      meetingLink = meetingDetails ? meetingDetails.meetLink : null;
+    }
 
     const appointmentData = {
       appointmentName: appointment.service_name || appointment.serviceName || 'Telemedicine Consultation',
@@ -114,7 +151,7 @@ exports.handleAppointmentCreated = async (req, res) => {
       patientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId || appointment.providerId,
-      notes: `Cowlendar appointment. Google Meet: ${meetingDetails.meetLink}`,
+      notes: meetingLink ? `Cowlendar appointment. Meeting link: ${meetingLink}` : 'Cowlendar appointment.',
       isRecurring: false
     };
 
@@ -124,7 +161,7 @@ exports.handleAppointmentCreated = async (req, res) => {
     res.json({
       success: true,
       tebraAppointmentId: tebraAppointment.id || tebraAppointment.ID,
-      meetingLink: meetingDetails.meetLink,
+      meetingLink: meetingLink,
       patientId,
       message: 'Appointment synced to Tebra successfully'
     });
