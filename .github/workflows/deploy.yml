@@ -160,6 +160,24 @@ jobs:
               [ -f "/usr/local/nvm/nvm.sh" ] && echo "    - Exists" || echo "    - Not found"
               echo "  Checking: /opt/nvm/nvm.sh"
               [ -f "/opt/nvm/nvm.sh" ] && echo "    - Exists" || echo "    - Not found"
+              
+              # If NVM_DIR is set but script not found, check if directory exists and has node versions
+              if [ -n "${NVM_DIR:-}" ] && [ -d "${NVM_DIR}" ]; then
+                echo "  ℹ️ NVM_DIR is set to: $NVM_DIR"
+                echo "  Checking if NVM_DIR exists: $([ -d "$NVM_DIR" ] && echo 'yes' || echo 'no')"
+                if [ -d "$NVM_DIR/versions/node" ]; then
+                  echo "  ✅ Found node versions directory, will try to use it directly"
+                  # Try to find and use the latest node version
+                  LATEST_NODE=$(ls -t "$NVM_DIR/versions/node" 2>/dev/null | grep -E "^v[0-9]" | head -1)
+                  if [ -n "$LATEST_NODE" ] && [ -d "$NVM_DIR/versions/node/$LATEST_NODE/bin" ]; then
+                    export PATH="$NVM_DIR/versions/node/$LATEST_NODE/bin:$PATH"
+                    echo "  ✅ Added to PATH: $NVM_DIR/versions/node/$LATEST_NODE/bin"
+                    if command -v npm >/dev/null 2>&1; then
+                      echo "  ✅ npm is now available via direct PATH addition"
+                    fi
+                  fi
+                fi
+              fi
             fi
             
             echo ""
@@ -257,8 +275,22 @@ jobs:
                 fi
               fi
               
-              # Try common system locations
+              # Also check $HOME/.nvm even if NVM_DIR wasn't set
+              if ! command -v npm >/dev/null 2>&1 && [ -d "$HOME/.nvm/versions/node" ]; then
+                echo "  Searching in $HOME/.nvm/versions/node"
+                LATEST_NODE=$(ls -t "$HOME/.nvm/versions/node" 2>/dev/null | grep -E "^v[0-9]" | head -1)
+                if [ -n "$LATEST_NODE" ]; then
+                  NODE_BIN="$HOME/.nvm/versions/node/$LATEST_NODE/bin"
+                  if [ -d "$NODE_BIN" ] && [ -f "$NODE_BIN/npm" ]; then
+                    export PATH="$NODE_BIN:$PATH"
+                    echo "✅ Found and added to PATH: $NODE_BIN"
+                  fi
+                fi
+              fi
+              
+              # Try common system locations (check for both nodejs and node)
               if ! command -v npm >/dev/null 2>&1; then
+                echo "  Checking system-installed node/npm..."
                 for DIR in /usr/local/bin /usr/bin /opt/nodejs/bin "$HOME/.local/bin"; do
                   if [ -f "$DIR/npm" ]; then
                     export PATH="$DIR:$PATH"
@@ -266,6 +298,16 @@ jobs:
                     break
                   fi
                 done
+                
+                # Also check if nodejs package provides node (common on Ubuntu/Debian)
+                if ! command -v npm >/dev/null 2>&1 && command -v nodejs >/dev/null 2>&1; then
+                  echo "  Found nodejs, checking for npm..."
+                  # On some systems, npm might be in a different location
+                  if [ -f "/usr/bin/npm" ]; then
+                    export PATH="/usr/bin:$PATH"
+                    echo "✅ Found npm at: /usr/bin/npm"
+                  fi
+                fi
               fi
               
               # Final check
@@ -282,11 +324,35 @@ jobs:
                 which node 2>/dev/null || echo "  ❌ node not found in PATH"
                 which npm 2>/dev/null || echo "  ❌ npm not found in PATH"
                 echo ""
-                if [ -n "$NVM_DIR" ] && [ -d "$NVM_DIR/versions/node" ]; then
-                  echo "NVM node versions found:"
-                  ls -la "$NVM_DIR/versions/node" 2>/dev/null | head -10 || echo "  No versions found"
+                if [ -n "$NVM_DIR" ]; then
+                  echo "NVM_DIR diagnostics:"
+                  echo "  NVM_DIR: $NVM_DIR"
+                  echo "  Directory exists: $([ -d "$NVM_DIR" ] && echo 'yes' || echo 'no')"
+                  if [ -d "$NVM_DIR" ]; then
+                    echo "  Contents of NVM_DIR:"
+                    ls -la "$NVM_DIR" 2>/dev/null | head -10 || echo "    (cannot list)"
+                    if [ -d "$NVM_DIR/versions/node" ]; then
+                      echo "  Node versions found:"
+                      ls -la "$NVM_DIR/versions/node" 2>/dev/null | head -10 || echo "    (cannot list)"
+                    else
+                      echo "  versions/node directory: not found"
+                    fi
+                  fi
                 else
-                  echo "NVM_DIR not set or versions directory doesn't exist"
+                  echo "NVM_DIR not set"
+                fi
+                
+                # Also check $HOME/.nvm
+                if [ -d "$HOME/.nvm" ]; then
+                  echo ""
+                  echo "$HOME/.nvm diagnostics:"
+                  echo "  Directory exists: yes"
+                  echo "  Contents:"
+                  ls -la "$HOME/.nvm" 2>/dev/null | head -10 || echo "    (cannot list)"
+                  if [ -d "$HOME/.nvm/versions/node" ]; then
+                    echo "  Node versions:"
+                    ls -la "$HOME/.nvm/versions/node" 2>/dev/null | head -10 || echo "    (cannot list)"
+                  fi
                 fi
                 echo ""
                 echo "💡 Please ensure Node.js and npm are installed on the server."
