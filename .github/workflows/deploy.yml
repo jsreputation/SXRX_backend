@@ -38,8 +38,20 @@ jobs:
           DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << ENDSSH
+          ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} bash -l << ENDSSH
             set -e
+            
+            # Variables are embedded from GitHub Actions environment
+            DEPLOY_PATH="${DEPLOY_PATH}"
+            GITHUB_TOKEN_VAR="${GITHUB_TOKEN}"
+            
+            # Debug: Show we're on the server
+            echo "🔍 Server Info:"
+            echo "  Hostname: $(hostname)"
+            echo "  User: $(whoami)"
+            echo "  Home: $HOME"
+            echo "  PWD: $(pwd)"
+            echo ""
             
             # Validate deployment path
             if [ -z "${DEPLOY_PATH}" ]; then
@@ -77,10 +89,11 @@ jobs:
             # Ensure git remote uses HTTPS (not SSH)
             git remote set-url origin https://github.com/jsreputation/SXRX_backend.git || true
             
-            # If token is provided via workflow, use it; otherwise rely on server's stored token
-            if [ -n "${GITHUB_TOKEN}" ]; then
+            # Note: GITHUB_TOKEN_VAR is set from workflow environment
+            # If token is provided, use it; otherwise rely on server's stored credentials
+            if [ -n "${GITHUB_TOKEN_VAR}" ] && [ "${GITHUB_TOKEN_VAR}" != "null" ] && [ "${GITHUB_TOKEN_VAR}" != "" ]; then
               echo "🔑 Using GitHub token from workflow"
-              git remote set-url origin https://${GITHUB_TOKEN}@github.com/jsreputation/SXRX_backend.git
+              git remote set-url origin https://${GITHUB_TOKEN_VAR}@github.com/jsreputation/SXRX_backend.git
             else
               echo "ℹ️ Using server's stored GitHub credentials"
             fi
@@ -101,77 +114,91 @@ jobs:
             
             # Load NVM and setup Node.js environment
             echo "🔧 Setting up Node.js environment..."
-            
-            # Source shell profile files to load environment (NVM, PATH, etc.)
-            # SSH sessions don't automatically load .bashrc, so we need to source it
-            if [ -s "$HOME/.bashrc" ]; then
-              source "$HOME/.bashrc" 2>/dev/null || true
-            fi
-            if [ -s "$HOME/.bash_profile" ]; then
-              source "$HOME/.bash_profile" 2>/dev/null || true
-            fi
-            if [ -s "$HOME/.profile" ]; then
-              source "$HOME/.profile" 2>/dev/null || true
-            fi
+            echo "Current PATH: $PATH"
             
             # Try multiple NVM locations and load it
+            NVM_LOADED=false
             if [ -s "$HOME/.nvm/nvm.sh" ]; then
               export NVM_DIR="$HOME/.nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
               echo "✅ NVM loaded from $HOME/.nvm"
             elif [ -s "/usr/local/nvm/nvm.sh" ]; then
               export NVM_DIR="/usr/local/nvm"
-              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
               echo "✅ NVM loaded from /usr/local/nvm"
+            elif [ -s "/opt/nvm/nvm.sh" ]; then
+              export NVM_DIR="/opt/nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && NVM_LOADED=true
+              echo "✅ NVM loaded from /opt/nvm"
             fi
             
             # Use nvm to load default node version if available
-            if command -v nvm &> /dev/null; then
-              nvm use default 2>/dev/null || nvm use node 2>/dev/null || true
+            if [ "$NVM_LOADED" = true ] && command -v nvm &> /dev/null; then
+              nvm use default 2>/dev/null || nvm use node 2>/dev/null || nvm use --lts 2>/dev/null || true
+              echo "✅ NVM version activated"
             fi
             
-            # Check if npm is available
-            if ! command -v npm &> /dev/null; then
-              echo "⚠️ npm not found in PATH, trying to locate..."
+            # Check if npm is available (try system-installed first, then NVM)
+            if command -v npm &> /dev/null; then
+              echo "✅ npm found in PATH: $(which npm)"
+            else
+              echo "⚠️ npm not found in PATH, searching..."
               
-              # Try to find npm in common locations and add to PATH
-              NPM_PATH=$(command -v npm 2>/dev/null || \
-                find "$HOME/.nvm" -name npm 2>/dev/null | head -1 || \
-                find /usr/local -name npm 2>/dev/null | head -1 || \
-                find /usr -name npm 2>/dev/null | head -1 || \
-                echo "")
+              # Try to find npm in NVM directories
+              if [ "$NVM_LOADED" = true ] && [ -n "$NVM_DIR" ]; then
+                # Find the active node version's npm
+                if [ -d "$NVM_DIR/versions/node" ]; then
+                  NODE_VERSION=$(ls -t "$NVM_DIR/versions/node" 2>/dev/null | head -1)
+                  if [ -n "$NODE_VERSION" ] && [ -f "$NVM_DIR/versions/node/$NODE_VERSION/bin/npm" ]; then
+                    export PATH="$NVM_DIR/versions/node/$NODE_VERSION/bin:$PATH"
+                    echo "✅ Found npm in NVM: $NVM_DIR/versions/node/$NODE_VERSION/bin/npm"
+                  fi
+                fi
+              fi
               
-              if [ -n "$NPM_PATH" ]; then
-                NPM_DIR=$(dirname "$NPM_PATH")
-                export PATH="$NPM_DIR:$PATH"
-                echo "✅ Found npm at: $NPM_PATH"
-                echo "✅ Added to PATH: $NPM_DIR"
-              else
+              # Try common system locations
+              if ! command -v npm &> /dev/null; then
+                for DIR in /usr/local/bin /usr/bin /opt/nodejs/bin "$HOME/.local/bin"; do
+                  if [ -f "$DIR/npm" ]; then
+                    export PATH="$DIR:$PATH"
+                    echo "✅ Found npm at: $DIR/npm"
+                    break
+                  fi
+                done
+              fi
+              
+              # Final check
+              if ! command -v npm &> /dev/null; then
                 echo "❌ Error: npm command not found"
                 echo "Current PATH: $PATH"
                 echo "Current USER: $(whoami)"
                 echo "Current HOME: $HOME"
+                echo "NVM_DIR: ${NVM_DIR:-not set}"
+                echo ""
                 echo "Checking for node/npm installations..."
-                which node 2>/dev/null || echo "node not found in PATH"
-                which npm 2>/dev/null || echo "npm not found in PATH"
+                which node 2>/dev/null || echo "  ❌ node not found in PATH"
+                which npm 2>/dev/null || echo "  ❌ npm not found in PATH"
+                echo ""
                 echo "Searching for npm..."
-                find "$HOME" -name npm -type f 2>/dev/null | head -5 || echo "npm not found in $HOME"
-                find /usr/local -name npm -type f 2>/dev/null | head -5 || echo "npm not found in /usr/local"
+                find "$HOME/.nvm" -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in $HOME/.nvm"
+                find /usr/local -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in /usr/local"
+                find /usr/bin -name npm -type f 2>/dev/null | head -3 || echo "  npm not found in /usr/bin"
+                echo ""
+                echo "💡 Please ensure Node.js and npm are installed on the server."
+                echo "   You can install via:"
+                echo "   - NVM: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
+                echo "   - System: sudo apt-get install nodejs npm (Ubuntu/Debian)"
                 exit 1
               fi
             fi
             
-            # Verify npm is now available
-            if ! command -v npm &> /dev/null; then
-              echo "❌ Error: npm still not found after PATH update"
-              echo "Current PATH: $PATH"
-              exit 1
-            fi
-            
             # Display Node.js and npm versions
+            echo ""
             echo "✅ Node.js version: $(node --version 2>/dev/null || echo 'unknown')"
             echo "✅ npm version: $(npm --version 2>/dev/null || echo 'unknown')"
             echo "✅ npm location: $(which npm)"
+            echo "✅ Final PATH: $PATH"
+            echo ""
             
             # Install/update dependencies
             echo "Installing dependencies..."
