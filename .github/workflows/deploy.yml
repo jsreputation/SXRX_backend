@@ -1,5 +1,12 @@
 name: Deploy Backend
 
+# This workflow deploys backend code to the server
+# Uses GitHub Personal Access Token for git operations (HTTPS, not SSH)
+# See PRIVATE_REPOSITORY_SETUP.md for token configuration
+#
+# Note: If this workflow is in the main repository, you may want to change
+# paths to ['backend/**'] to only trigger on backend changes
+
 on:
   push:
     branches:
@@ -12,7 +19,7 @@ on:
 
 jobs:
   deploy:
-    name: Deploy Backend to Server
+    name: Deploy to Server
     runs-on: ubuntu-latest
     
     steps:
@@ -24,65 +31,49 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Add server to known hosts
-        run: |
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-
       - name: Deploy to Server
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
+          ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << ENDSSH
             set -e
-            echo "🚀 Starting backend deployment..."
             
-            # Navigate to backend directory
-            cd ${{ secrets.BACKEND_DEPLOY_PATH }} || exit 1
+            cd ${DEPLOY_PATH}
+            
+            # Ensure git remote uses HTTPS (not SSH)
+            git remote set-url origin https://github.com/jsreputation/SXRX_backend.git || true
+            
+            # If token is provided via workflow, use it; otherwise rely on server's stored token
+            if [ -n "${GITHUB_TOKEN}" ]; then
+              git remote set-url origin https://${GITHUB_TOKEN}@github.com/jsreputation/SXRX_backend.git
+            fi
+            
+            # Pull latest code
+            echo "Pulling latest code from GitHub..."
+            git fetch origin
+            git reset --hard origin/main
             
             # Load NVM
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             
-            # Pull latest code
-            echo "📥 Pulling latest code..."
-            git fetch origin
-            git reset --hard origin/main || git reset --hard origin/master
-            
             # Install/update dependencies
-            echo "📦 Installing dependencies..."
+            echo "Installing dependencies..."
             npm ci --production
             
-            # Validate environment
-            echo "✅ Validating environment..."
-            npm run validate-env || true
-            
-            # Restart application with PM2
-            echo "🔄 Restarting application..."
+            # Restart backend with PM2
+            echo "Restarting backend..."
             pm2 restart sxrx-backend || pm2 start src/index.js --name sxrx-backend
-            
-            # Save PM2 configuration
             pm2 save
             
-            # Show status
-            echo "📊 Application status:"
+            # Verify deployment
+            echo "Verifying deployment..."
+            sleep 2
             pm2 status sxrx-backend
             
-            echo "✅ Deployment completed!"
-          ENDSSH
-
-      - name: Verify Deployment
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-        run: |
-          echo "🔍 Verifying deployment..."
-          ssh ${SERVER_USER}@${SERVER_HOST} << 'ENDSSH'
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-            pm2 status sxrx-backend
-            pm2 logs sxrx-backend --lines 20 --nostream
           ENDSSH
 
       - name: Deployment Summary
@@ -95,6 +86,3 @@ jobs:
           echo "**Server:** ${{ secrets.SERVER_HOST }}" >> $GITHUB_STEP_SUMMARY
           echo "**Deploy Path:** ${{ secrets.BACKEND_DEPLOY_PATH }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Check PM2 logs on server for details." >> $GITHUB_STEP_SUMMARY
-
