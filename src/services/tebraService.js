@@ -3761,5 +3761,18 @@ Object.defineProperty(tebraServiceInstance, 'TebraService', {
   configurable: false
 });
 
+// Also attach as a regular property for compatibility
+tebraServiceInstance.TebraService = TebraService;
+
+// Export the instance as the default export
+// The TebraService class is attached as a property
 module.exports = tebraServiceInstance;
-module.exports.TebraService = TebraService;
+
+// Explicitly set the TebraService property on module.exports to ensure it's accessible
+// This pattern ensures compatibility across different Node.js versions and module systems
+Object.defineProperty(module.exports, 'TebraService', {
+  value: TebraService,
+  writable: false,
+  enumerable: true,
+  configurable: false
+});

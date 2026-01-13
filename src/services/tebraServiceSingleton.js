@@ -7,6 +7,8 @@ const TebraService = tebraServiceModule.TebraService;
 
 // Verify TebraService is a constructor
 if (!TebraService || typeof TebraService !== 'function') {
+  console.error('tebraServiceModule keys:', Object.keys(tebraServiceModule || {}));
+  console.error('TebraService value:', TebraService, 'type:', typeof TebraService);
   throw new Error('TebraService is not a constructor. Check tebraService.js exports.');
 }
 
