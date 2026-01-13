@@ -13,6 +13,9 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
+# variable values
+.env
+
 # Runtime data
 pids/
 *.pid

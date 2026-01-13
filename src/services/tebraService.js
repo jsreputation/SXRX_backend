@@ -3752,5 +3752,14 @@ tebraServiceInstance.getDocumentContent = async function(documentId) {
   }
 };
 
+// Export both the instance (default) and the class
+// Attach the class to the instance so it can be accessed via destructuring
+Object.defineProperty(tebraServiceInstance, 'TebraService', {
+  value: TebraService,
+  writable: false,
+  enumerable: true,
+  configurable: false
+});
+
 module.exports = tebraServiceInstance;
 module.exports.TebraService = TebraService;

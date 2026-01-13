@@ -1,8 +1,14 @@
 // backend/src/services/tebraServiceSingleton.js
 // Singleton wrapper for TebraService to ensure single instance across the application
 
-// Import the class, not the instance
-const { TebraService } = require('./tebraService');
+// Import the module to access both instance and class
+const tebraServiceModule = require('./tebraService');
+const TebraService = tebraServiceModule.TebraService;
+
+// Verify TebraService is a constructor
+if (!TebraService || typeof TebraService !== 'function') {
+  throw new Error('TebraService is not a constructor. Check tebraService.js exports.');
+}
 
 let tebraServiceInstance = null;
 
