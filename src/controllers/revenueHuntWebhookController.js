@@ -28,6 +28,9 @@ function determineState(payload) {
     const stateMap = {
       'california': 'CA',
       'texas': 'TX',
+      'washington': 'WA',
+      'kuala lumpur': 'KL',
+      'kl': 'KL',
       'new york': 'NY',
       'florida': 'FL',
       // Add more as needed

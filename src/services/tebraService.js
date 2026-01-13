@@ -3753,23 +3753,19 @@ tebraServiceInstance.getDocumentContent = async function(documentId) {
 };
 
 // Export both the instance (default) and the class
-// Attach the class to the instance so it can be accessed via destructuring
-Object.defineProperty(tebraServiceInstance, 'TebraService', {
-  value: TebraService,
-  writable: false,
-  enumerable: true,
-  configurable: false
-});
-
-// Also attach as a regular property for compatibility
+// Use a more reliable export pattern that ensures TebraService is always accessible
+// First, attach the class to the instance
 tebraServiceInstance.TebraService = TebraService;
 
-// Export the instance as the default export
-// The TebraService class is attached as a property
-module.exports = tebraServiceInstance;
+// Create the exports object with both instance and class
+// This ensures TebraService is always accessible as a constructor
+const exports = tebraServiceInstance;
+exports.TebraService = TebraService;
 
-// Explicitly set the TebraService property on module.exports to ensure it's accessible
-// This pattern ensures compatibility across different Node.js versions and module systems
+// Export using module.exports assignment
+module.exports = exports;
+
+// Also set it as a non-enumerable property for additional compatibility
 Object.defineProperty(module.exports, 'TebraService', {
   value: TebraService,
   writable: false,

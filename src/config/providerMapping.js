@@ -15,6 +15,20 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_TX || undefined,
     allowKetamine: true,
   },
+  WA: {
+    state: 'WA',
+    practiceId: process.env.TEBRA_PRACTICE_ID_WA || process.env.TEBRA_PRACTICE_ID || undefined,
+    practiceName: process.env.TEBRA_PRACTICE_NAME_WA || process.env.TEBRA_PRACTICE_NAME || undefined,
+    defaultProviderId: process.env.TEBRA_PROVIDER_ID_WA || process.env.TEBRA_PROVIDER_ID || undefined,
+    allowKetamine: false,
+  },
+  KL: {
+    state: 'KL',
+    practiceId: process.env.TEBRA_PRACTICE_ID_KL || process.env.TEBRA_PRACTICE_ID || undefined,
+    practiceName: process.env.TEBRA_PRACTICE_NAME_KL || process.env.TEBRA_PRACTICE_NAME || undefined,
+    defaultProviderId: process.env.TEBRA_PROVIDER_ID_KL || process.env.TEBRA_PROVIDER_ID || undefined,
+    allowKetamine: false,
+  },
 };
 
 
