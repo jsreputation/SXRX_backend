@@ -2,6 +2,7 @@
   "name": "sxrx-backend",
   "version": "1.0.0",
   "description": "SXRX Backend API",
+  "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
