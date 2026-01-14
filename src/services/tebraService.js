@@ -3757,15 +3757,10 @@ tebraServiceInstance.getDocumentContent = async function(documentId) {
 // First, attach the class to the instance
 tebraServiceInstance.TebraService = TebraService;
 
-// Create the exports object with both instance and class
-// This ensures TebraService is always accessible as a constructor
-const exports = tebraServiceInstance;
-exports.TebraService = TebraService;
+// Export the instance directly (which has TebraService attached)
+module.exports = tebraServiceInstance;
 
-// Export using module.exports assignment
-module.exports = exports;
-
-// Also set it as a non-enumerable property for additional compatibility
+// Also set TebraService as a non-enumerable property for additional compatibility
 Object.defineProperty(module.exports, 'TebraService', {
   value: TebraService,
   writable: false,
