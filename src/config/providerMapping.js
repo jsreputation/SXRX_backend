@@ -29,6 +29,13 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_KL || process.env.TEBRA_PROVIDER_ID || undefined,
     allowKetamine: false,
   },
+  SC: {
+    state: 'SC',
+    practiceId: process.env.TEBRA_PRACTICE_ID_SC || process.env.TEBRA_PRACTICE_ID || undefined,
+    practiceName: process.env.TEBRA_PRACTICE_NAME_SC || process.env.TEBRA_PRACTICE_NAME || undefined,
+    defaultProviderId: process.env.TEBRA_PROVIDER_ID_SC || process.env.TEBRA_PROVIDER_ID || undefined,
+    allowKetamine: false,
+  },
 };
 
 

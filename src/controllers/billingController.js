@@ -591,19 +591,32 @@ exports.handleShopifyOrderCreated = async (req, res) => {
 
     // Determine state from shipping/billing address
     const shippingAddress = order.shipping_address || order.billing_address;
-    const state = (shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state || 'CA').toUpperCase();
+    const billingAddress = order.billing_address;
+    const detectedState = shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state || 
+                         billingAddress?.province_code || billingAddress?.province || billingAddress?.state || 
+                         'CA';
+    const state = detectedState.toUpperCase();
+    
+    console.log(`🌍 [STEP 4] [ORDER CREATED] State detection - Detected: "${detectedState}" (normalized: ${state}), Available states: ${Object.keys(require('../config/providerMapping')).join(', ')}`);
+    
     const providerMapping = require('../config/providerMapping');
     const mapping = providerMapping[state] || providerMapping['CA'] || {};
     
     if (!mapping.practiceId) {
       console.warn(`⚠️ [ORDER CREATED] Unsupported state: ${state} for order ${shopifyOrderId}`);
+      console.warn(`   Available states: ${Object.keys(providerMapping).join(', ')}`);
+      console.warn(`   Shipping address: ${JSON.stringify(shippingAddress ? { province_code: shippingAddress.province_code, province: shippingAddress.province, state: shippingAddress.state } : 'N/A')}`);
+      console.warn(`   Billing address: ${JSON.stringify(billingAddress ? { province_code: billingAddress.province_code, province: billingAddress.province, state: billingAddress.state } : 'N/A')}`);
       return res.json({ 
         success: true, 
         skipped: true, 
         reason: 'unsupported_state',
-        state 
+        state,
+        availableStates: Object.keys(providerMapping)
       });
     }
+    
+    console.log(`✅ [STEP 4] [ORDER CREATED] State mapping found - State: ${state}, Practice ID: ${mapping.practiceId}, Provider ID: ${mapping.defaultProviderId}`);
 
     // Get or create patient in Tebra
     const customerPatientMapService = require('../services/customerPatientMapService');
@@ -810,6 +823,9 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     try {
       tebraAppointment = await tebraService.createAppointment(appointmentData);
       
+      // Log the full response structure for debugging
+      console.log(`🔍 [STEP 5] [DEBUG] Full createAppointment response:`, JSON.stringify(tebraAppointment, null, 2));
+      
       // Extract appointment ID from various possible response structures
       // Raw SOAP returns: { CreateAppointmentResult: { Appointment: { AppointmentID: ... } } }
       // Normalized returns: { id: ..., appointmentId: ... }
@@ -821,6 +837,11 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         const appointment = tebraAppointment.Appointment;
         tebraAppointmentId = appointment.AppointmentID || appointment.AppointmentId || appointment.id;
         console.log(`🔍 [STEP 5] Extracted appointment ID from Appointment: ${tebraAppointmentId}`);
+      } else if (tebraAppointment?.CreateAppointmentResult) {
+        // Sometimes the appointment is directly in CreateAppointmentResult
+        const result = tebraAppointment.CreateAppointmentResult;
+        tebraAppointmentId = result.AppointmentID || result.AppointmentId || result.id;
+        console.log(`🔍 [STEP 5] Extracted appointment ID from CreateAppointmentResult: ${tebraAppointmentId}`);
       } else {
         tebraAppointmentId = tebraAppointment?.id || tebraAppointment?.ID || tebraAppointment?.appointmentId || tebraAppointment?.AppointmentID;
         console.log(`🔍 [STEP 5] Extracted appointment ID from root: ${tebraAppointmentId}`);
@@ -828,7 +849,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       
       // Log full response for debugging if ID is still missing
       if (!tebraAppointmentId) {
-        console.warn(`⚠️ [STEP 5] Could not extract appointment ID from response. Full response:`, JSON.stringify(tebraAppointment, null, 2));
+        console.warn(`⚠️ [STEP 5] Could not extract appointment ID from response. Full response keys:`, Object.keys(tebraAppointment || {}));
+        console.warn(`⚠️ [STEP 5] Full response structure:`, JSON.stringify(tebraAppointment, null, 2));
       }
       
     } catch (appointmentError) {
