@@ -512,5 +512,199 @@ router.get('/customers/:customerId/appointments', optionalAuth, async (req, res)
   }
 });
 
+/**
+ * PUT /api/shopify/customers/:customerId/appointments/:appointmentId/cancel
+ * Cancel an appointment (customer-facing endpoint)
+ * Note: Auth is optional - if no token provided, we'll still try to process (for customer account pages)
+ */
+router.put('/customers/:customerId/appointments/:appointmentId/cancel', optionalAuth, async (req, res) => {
+  try {
+    const { customerId, appointmentId } = req.params;
+    console.log(`❌ [APPOINTMENT CANCEL] Request to cancel appointment ${appointmentId} for customer ${customerId}`);
+    
+    const customerPatientMapService = require('../services/customerPatientMapService');
+    const tebraService = require('../services/tebraService');
+    
+    // Get customer email for lookup
+    let customerEmail = null;
+    try {
+      const customer = await shopifyUserService.getCustomer(customerId);
+      customerEmail = customer?.email;
+    } catch (e) {
+      console.warn('[APPOINTMENT CANCEL] Failed to fetch customer:', e?.message || e);
+    }
+    
+    // Get Tebra patient ID
+    let tebraPatientId = null;
+    try {
+      const mapping = await customerPatientMapService.getByShopifyIdOrEmail(customerId, customerEmail);
+      if (mapping && mapping.tebra_patient_id) {
+        tebraPatientId = mapping.tebra_patient_id;
+      }
+    } catch (e) {
+      console.warn('[APPOINTMENT CANCEL] Failed to fetch customer-patient mapping:', e?.message || e);
+    }
+    
+    if (!tebraPatientId) {
+      return res.status(404).json({
+        error: 'PATIENT_NOT_FOUND',
+        message: 'Patient record not found.'
+      });
+    }
+    
+    // Verify appointment belongs to patient
+    let appointment = null;
+    try {
+      const appointmentResponse = await tebraService.getAppointment(appointmentId);
+      appointment = appointmentResponse.appointment || appointmentResponse.Appointment || appointmentResponse;
+      
+      const appointmentPatientId = appointment.patientId || appointment.PatientId || appointment.patient_id;
+      if (String(appointmentPatientId) !== String(tebraPatientId)) {
+        return res.status(403).json({
+          error: 'UNAUTHORIZED',
+          message: 'This appointment does not belong to you.'
+        });
+      }
+    } catch (e) {
+      console.error('[APPOINTMENT CANCEL] Failed to fetch appointment:', e?.message || e);
+      return res.status(404).json({
+        error: 'APPOINTMENT_NOT_FOUND',
+        message: 'Appointment not found.'
+      });
+    }
+    
+    // Cancel appointment
+    try {
+      const updateData = {
+        appointmentStatus: 'Cancelled',
+        notes: (appointment.notes || appointment.Notes || '') + '\n[Cancelled by patient]'
+      };
+      
+      await tebraService.updateAppointment(appointmentId, updateData);
+      console.log(`✅ [APPOINTMENT CANCEL] Cancelled appointment ${appointmentId}`);
+      
+      res.json({
+        success: true,
+        message: 'Appointment cancelled successfully',
+        appointmentId: appointmentId
+      });
+    } catch (e) {
+      console.error('[APPOINTMENT CANCEL] Failed to cancel appointment:', e?.message || e);
+      res.status(500).json({
+        error: 'CANCEL_FAILED',
+        message: 'Failed to cancel appointment. Please try again or contact support.'
+      });
+    }
+  } catch (error) {
+    console.error('[APPOINTMENT CANCEL] Error:', error);
+    res.status(500).json({ 
+      error: 'CANCEL_FAILED', 
+      message: error.message || 'Failed to cancel appointment'
+    });
+  }
+});
+
+/**
+ * PUT /api/shopify/customers/:customerId/appointments/:appointmentId/update
+ * Update an appointment (customer-facing endpoint for rescheduling)
+ * Note: Auth is optional - if no token provided, we'll still try to process (for customer account pages)
+ */
+router.put('/customers/:customerId/appointments/:appointmentId/update', optionalAuth, async (req, res) => {
+  try {
+    const { customerId, appointmentId } = req.params;
+    const { startTime, endTime, notes } = req.body;
+    
+    console.log(`✏️ [APPOINTMENT UPDATE] Request to update appointment ${appointmentId} for customer ${customerId}`);
+    
+    if (!startTime) {
+      return res.status(400).json({
+        error: 'MISSING_FIELDS',
+        message: 'startTime is required'
+      });
+    }
+    
+    const customerPatientMapService = require('../services/customerPatientMapService');
+    const tebraService = require('../services/tebraService');
+    
+    // Get customer email for lookup
+    let customerEmail = null;
+    try {
+      const customer = await shopifyUserService.getCustomer(customerId);
+      customerEmail = customer?.email;
+    } catch (e) {
+      console.warn('[APPOINTMENT UPDATE] Failed to fetch customer:', e?.message || e);
+    }
+    
+    // Get Tebra patient ID
+    let tebraPatientId = null;
+    try {
+      const mapping = await customerPatientMapService.getByShopifyIdOrEmail(customerId, customerEmail);
+      if (mapping && mapping.tebra_patient_id) {
+        tebraPatientId = mapping.tebra_patient_id;
+      }
+    } catch (e) {
+      console.warn('[APPOINTMENT UPDATE] Failed to fetch customer-patient mapping:', e?.message || e);
+    }
+    
+    if (!tebraPatientId) {
+      return res.status(404).json({
+        error: 'PATIENT_NOT_FOUND',
+        message: 'Patient record not found.'
+      });
+    }
+    
+    // Verify appointment belongs to patient
+    let appointment = null;
+    try {
+      const appointmentResponse = await tebraService.getAppointment(appointmentId);
+      appointment = appointmentResponse.appointment || appointmentResponse.Appointment || appointmentResponse;
+      
+      const appointmentPatientId = appointment.patientId || appointment.PatientId || appointment.patient_id;
+      if (String(appointmentPatientId) !== String(tebraPatientId)) {
+        return res.status(403).json({
+          error: 'UNAUTHORIZED',
+          message: 'This appointment does not belong to you.'
+        });
+      }
+    } catch (e) {
+      console.error('[APPOINTMENT UPDATE] Failed to fetch appointment:', e?.message || e);
+      return res.status(404).json({
+        error: 'APPOINTMENT_NOT_FOUND',
+        message: 'Appointment not found.'
+      });
+    }
+    
+    // Update appointment
+    try {
+      const updateData = {
+        startTime: new Date(startTime).toISOString(),
+        endTime: endTime ? new Date(endTime).toISOString() : new Date(new Date(startTime).getTime() + 30 * 60000).toISOString(),
+        notes: notes || appointment.notes || appointment.Notes || ''
+      };
+      
+      await tebraService.updateAppointment(appointmentId, updateData);
+      console.log(`✅ [APPOINTMENT UPDATE] Updated appointment ${appointmentId}`);
+      
+      res.json({
+        success: true,
+        message: 'Appointment updated successfully',
+        appointmentId: appointmentId
+      });
+    } catch (e) {
+      console.error('[APPOINTMENT UPDATE] Failed to update appointment:', e?.message || e);
+      res.status(500).json({
+        error: 'UPDATE_FAILED',
+        message: 'Failed to update appointment. Please try again or contact support.'
+      });
+    }
+  } catch (error) {
+    console.error('[APPOINTMENT UPDATE] Error:', error);
+    res.status(500).json({ 
+      error: 'UPDATE_FAILED', 
+      message: error.message || 'Failed to update appointment'
+    });
+  }
+});
+
 module.exports = router;
 
