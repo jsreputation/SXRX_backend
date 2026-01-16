@@ -3315,19 +3315,27 @@ ${appointmentXml}
   normalizeGetProvidersResponse(result) {
     const data = this.unwrap(result);
     
+    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - data:', JSON.stringify(data, null, 2));
+    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - data.Providers:', data.Providers);
+    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - Array.isArray(data.Providers):', Array.isArray(data.Providers));
+    
     // Handle different response structures
     if (data.Providers && Array.isArray(data.Providers)) {
+      console.log('🔍 [DEBUG] Using Providers array path, count:', data.Providers.length);
       return {
         providers: data.Providers.map(provider => this.normalizeProviderData(provider)),
         totalCount: data.TotalCount || data.Providers.length
       };
     } else if (Array.isArray(data)) {
+      console.log('🔍 [DEBUG] Using data as array path, count:', data.length);
       return {
         providers: data.map(provider => this.normalizeProviderData(provider)),
         totalCount: data.length
       };
     } else {
       // Single provider response
+      console.log('🔍 [DEBUG] Using single provider path');
+      console.log('🔍 [DEBUG] Data keys:', Object.keys(data));
       return {
         providers: [this.normalizeProviderData(data)],
         totalCount: 1
