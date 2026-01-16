@@ -200,7 +200,10 @@ ${patientXml}        </sch:Patient>
     const auth = this.getAuthHeader();
     
     // Define the required field order for CreateAppointment based on API documentation
-    // IMPORTANT: PracticeId must come before StartTime and EndTime (Tebra requirement)
+    // IMPORTANT: Tebra has strict field ordering requirements:
+    // - PracticeId must come before StartTime and EndTime
+    // - EndTime must come after CustomerId and before ForRecare
+    // - StartTime must come after PracticeId
     const requiredFieldOrder = [
       'AppointmentId',
       'AppointmentMode', 
@@ -213,6 +216,7 @@ ${patientXml}        </sch:Patient>
       'CreatedAt',
       'CreatedBy',
       'CustomerId',
+      'EndTime', // Must come after CustomerId and before ForRecare
       'ForRecare',
       'InsurancePolicyAuthorizationId',
       'IsDeleted',
@@ -226,14 +230,13 @@ ${patientXml}        </sch:Patient>
       'PatientSummary',
       'PatientGuid',
       'PatientId',
-      'PracticeId', // Must come before StartTime and EndTime
+      'PracticeId', // Must come before StartTime
       'ProviderId',
       'RecurrenceRule',
       'ResourceId',
       'ResourceIds',
       'ServiceLocationId',
       'StartTime', // Must come after PracticeId
-      'EndTime', // Must come after PracticeId and StartTime
       'UpdatedAt',
       'UpdatedBy',
       'WasCreatedOnline'
@@ -253,8 +256,8 @@ ${patientXml}        </sch:Patient>
         const value = data[key];
         // Skip if undefined, empty string, or null for certain field types
         if (value === undefined || value === '') {
-          // Log if PracticeId is being skipped (critical field)
-          if (key === 'PracticeId') {
+          // Log if PracticeId is being skipped (critical field) - but only if it's actually missing
+          if (key === 'PracticeId' && !data.PracticeId && !data.practiceId && !data.PracticeID) {
             console.warn(`⚠️ [TEBRA] PracticeId is undefined or empty - this will cause errors!`);
           }
           continue;
