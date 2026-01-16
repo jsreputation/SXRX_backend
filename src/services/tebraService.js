@@ -2607,8 +2607,22 @@ ${appointmentXml}
     try {
       // Use raw SOAP if enabled, otherwise use soap library
       if (this.useRawSOAP) {
-        const fields = { Active: 1 };
+        // Request minimal fields to avoid InternalServiceFault
+        const fields = {
+          ID: 1,
+          FirstName: 1,
+          LastName: 1,
+          Active: 1
+        };
+        
         const filters = {};
+        if (options.practiceId) filters.PracticeId = options.practiceId;
+        if (options.id) filters.ID = options.id;
+        if (options.active !== undefined) filters.Active = options.active;
+        
+        console.log("GetProviders (raw SOAP) - fields:", JSON.stringify(fields, null, 2));
+        console.log("GetProviders (raw SOAP) - filters:", JSON.stringify(filters, null, 2));
+        
         const result = await this.callRawSOAPMethod('GetProviders', fields, filters);
         return this.parseRawSOAPResponse(result, 'GetProviders');
       }
@@ -2621,10 +2635,15 @@ ${appointmentXml}
         request: {
           RequestHeader: this.buildRequestHeader(),
           Fields: {
-            // Start with just the most basic fields
+            // Minimal fields to avoid InternalServiceFault
+            ID: 1,
+            FirstName: 1,
+            LastName: 1,
             Active: 1
           },
-          Filter: {}
+          Filter: {
+            PracticeId: options.practiceId
+          }
         }
       };
 
@@ -3558,6 +3577,44 @@ ${appointmentXml}
             [`${methodName}Result`]: {
               Practices: practices,
               TotalCount: practices.length,
+              rawXml: resultXml
+            }
+          };
+        }
+        
+        // Handle GetProviders response
+        if (methodName === 'GetProviders') {
+          const providers = [];
+          const providerMatches = resultXml.match(/<ProviderData[^>]*>(.*?)<\/ProviderData>/gs);
+          
+          if (providerMatches) {
+            for (const providerXml of providerMatches) {
+              const provider = {};
+              
+              // Extract provider fields
+              const fieldMatches = providerXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
+              if (fieldMatches) {
+                for (const fieldMatch of fieldMatches) {
+                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
+                  if (fieldNameMatch) {
+                    const fieldName = fieldNameMatch[1];
+                    const fieldValue = fieldNameMatch[2];
+                    provider[fieldName] = fieldValue;
+                  }
+                }
+              }
+              
+              if (Object.keys(provider).length > 0) {
+                providers.push(provider);
+              }
+            }
+          }
+          
+          // Return structure that matches what the normalizers expect
+          return {
+            [`${methodName}Result`]: {
+              Providers: providers,
+              TotalCount: providers.length,
               rawXml: resultXml
             }
           };
