@@ -275,11 +275,13 @@ ${patientXml}        </sch:Patient>
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
-        // For order-critical fields (ProviderId, ResourceId, etc.), skip if null
-        // but the order is maintained by requiredFieldOrder array iteration
-        const orderCriticalFields = ['ProviderId', 'ResourceId', 'ResourceIds', 'ServiceLocationId', 'RecurrenceRule'];
+        // For order-critical fields (ProviderId, ResourceId, etc.), we need to include them
+        // even if null to maintain Tebra's strict field ordering requirements
+        // Tebra expects these fields to appear before StartTime
+        // Note: ProviderId and ServiceLocationId are now set to 0 instead of null to maintain order
+        const orderCriticalFields = ['ResourceId', 'ResourceIds', 'RecurrenceRule'];
         if (orderCriticalFields.includes(key) && value === null) {
-          // Skip these if null - order is maintained by iterating requiredFieldOrder
+          // Skip these if null - they're truly optional
           continue;
         }
         
@@ -1344,31 +1346,35 @@ ${appointmentXml}
         return parsed;
       })(),
       // Convert ProviderId to integer (Tebra expects integer, not string)
-      // IMPORTANT: Only include ProviderId if explicitly provided - Tebra may reject default values
+      // IMPORTANT: Tebra requires ProviderId to appear in XML before StartTime for field ordering
+      // We'll set it to 0 (or omit if Tebra accepts that) to maintain order
       ProviderId: (() => {
         const providerId = appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId;
-        // Omit ProviderId if not explicitly provided - let Tebra use practice default
+        // For field ordering, we need to include ProviderId even if using practice default
+        // Set to 0 as a sentinel value that Tebra might accept as "use practice default"
+        // If Tebra rejects 0, we'll need to include it as empty or find another approach
         if (!providerId || providerId === '1' || providerId === 1) {
-          console.log(`⚠️ [TEBRA] Omitting ProviderId (value: ${providerId}) - Tebra will use practice default`);
-          return null;
+          console.log(`⚠️ [TEBRA] Setting ProviderId to 0 (was ${providerId}) - Tebra will use practice default, but field order maintained`);
+          return 0; // Use 0 as sentinel to maintain field order
         }
         const parsed = typeof providerId === 'string' ? parseInt(providerId, 10) : providerId;
         if (isNaN(parsed)) {
-          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, omitting`);
-          return null;
+          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, setting to 0 for field order`);
+          return 0;
         }
         console.log(`✅ [TEBRA] Using ProviderId: ${parsed} (converted from ${providerId})`);
         return parsed;
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
       ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
-      // Convert ServiceLocationId - omit if default value to let Tebra use practice default
+      // Convert ServiceLocationId - set to 0 to maintain field order if not provided
       ServiceLocationId: (() => {
         const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
-        // Omit ServiceLocationId if not explicitly provided or if it's the default '1' - let Tebra use practice default
+        // For field ordering, we need to include ServiceLocationId even if using practice default
+        // Set to 0 as a sentinel value that Tebra might accept as "use practice default"
         if (!serviceLocationId || serviceLocationId === '1' || serviceLocationId === 1 || serviceLocationId === 'default-location') {
-          console.log(`⚠️ [TEBRA] Omitting ServiceLocationId (value: ${serviceLocationId}) - Tebra will use practice default`);
-          return null;
+          console.log(`⚠️ [TEBRA] Setting ServiceLocationId to 0 (was ${serviceLocationId}) - Tebra will use practice default, but field order maintained`);
+          return 0; // Use 0 as sentinel to maintain field order
         }
         const parsed = typeof serviceLocationId === 'string' ? parseInt(serviceLocationId, 10) : serviceLocationId;
         if (isNaN(parsed)) {
