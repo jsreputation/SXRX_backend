@@ -257,8 +257,12 @@ ${patientXml}        </sch:Patient>
         // Skip if undefined, empty string, or null for certain field types
         if (value === undefined || value === '') {
           // Log if PracticeId is being skipped (critical field) - but only if it's actually missing
-          if (key === 'PracticeId' && !data.PracticeId && !data.practiceId && !data.PracticeID) {
-            console.warn(`⚠️ [TEBRA] PracticeId is undefined or empty - this will cause errors!`);
+          // Check all possible case variations
+          if (key === 'PracticeId') {
+            const hasPracticeId = data.PracticeId !== undefined || data.practiceId !== undefined || data.PracticeID !== undefined;
+            if (!hasPracticeId) {
+              console.warn(`⚠️ [TEBRA] PracticeId is undefined or empty - this will cause errors!`);
+            }
           }
           continue;
         }

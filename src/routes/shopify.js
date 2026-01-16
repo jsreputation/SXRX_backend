@@ -3,7 +3,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { auth } = require('../middleware/shopifyTokenAuth');
+const { auth, optionalAuth } = require('../middleware/shopifyTokenAuth');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
 const tebraService = require('../services/tebraService');
@@ -264,10 +264,16 @@ router.get('/products/:productId', auth, async (req, res) => {
 /**
  * GET /api/shopify/customers/:customerId/chart
  * Get patient medical chart (patient info, questionnaire, documents, prescriptions, appointments) from Tebra
+ * Note: Auth is optional - if no token provided, we'll still try to fetch data (for customer account pages)
  */
-router.get('/customers/:customerId/chart', auth, async (req, res) => {
+router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
   try {
     const { customerId } = req.params;
+    console.log(`📋 [CHART] Request for customer ${customerId}`, {
+      hasAuth: !!req.user,
+      authType: req.user?.authType || 'none',
+      customerIdFromAuth: req.user?.shopifyCustomerId || req.user?.id || null
+    });
     const customerPatientMapService = require('../services/customerPatientMapService');
     
     // Get customer email for lookup
@@ -412,6 +418,96 @@ router.get('/customers/:customerId/chart', auth, async (req, res) => {
     res.status(500).json({ 
       error: 'FETCH_FAILED', 
       message: error.message || 'Failed to fetch patient chart'
+    });
+  }
+});
+
+/**
+ * GET /api/shopify/customers/:customerId/appointments
+ * Get patient appointments from Tebra
+ * This is a convenience endpoint that returns just appointments (also available via /chart endpoint)
+ * Note: Auth is optional - if no token provided, we'll still try to fetch data (for customer account pages)
+ */
+router.get('/customers/:customerId/appointments', optionalAuth, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    console.log(`📅 [APPOINTMENTS] Request for customer ${customerId}`, {
+      hasAuth: !!req.user,
+      authType: req.user?.authType || 'none',
+      customerIdFromAuth: req.user?.shopifyCustomerId || req.user?.id || null
+    });
+    const customerPatientMapService = require('../services/customerPatientMapService');
+    
+    // Get customer email for lookup
+    let customerEmail = null;
+    try {
+      const customer = await shopifyUserService.getCustomer(customerId);
+      customerEmail = customer?.email;
+    } catch (e) {
+      console.warn('[APPOINTMENTS] Failed to fetch customer:', e?.message || e);
+    }
+    
+    // Get Tebra patient ID from customer-patient mapping
+    let tebraPatientId = null;
+    try {
+      const mapping = await customerPatientMapService.getByShopifyIdOrEmail(customerId, customerEmail);
+      if (mapping && mapping.tebra_patient_id) {
+        tebraPatientId = mapping.tebra_patient_id;
+      }
+    } catch (e) {
+      console.warn('[APPOINTMENTS] Failed to fetch customer-patient mapping:', e?.message || e);
+    }
+    
+    // Fallback: try customer metafields
+    if (!tebraPatientId) {
+      try {
+        const metafields = await shopifyUserService.getCustomerMetafields(customerId);
+        tebraPatientId = metafields?.tebra_patient_id?.value || 
+                        metafields?.tebra_patient_id ||
+                        metafields?.tebraPatientId;
+      } catch (e) {
+        console.warn('[APPOINTMENTS] Failed to fetch customer metafields:', e?.message || e);
+      }
+    }
+    
+    if (!tebraPatientId) {
+      return res.status(404).json({
+        error: 'PATIENT_NOT_FOUND',
+        message: 'Patient record not found. Please complete a questionnaire or book an appointment first.'
+      });
+    }
+    
+    // Fetch appointments from Tebra
+    let appointments = [];
+    try {
+      const appointmentsResponse = await tebraService.getAppointments({ patientId: tebraPatientId });
+      appointments = (appointmentsResponse.appointments || appointmentsResponse.Appointments || []).map(apt => ({
+        id: apt.id || apt.ID || apt.AppointmentID || apt.AppointmentId,
+        appointmentName: apt.appointmentName || apt.AppointmentName || 'Appointment',
+        startTime: apt.startTime || apt.StartTime || apt.StartDate,
+        endTime: apt.endTime || apt.EndTime || apt.EndDate,
+        status: apt.appointmentStatus || apt.AppointmentStatus || apt.status || 'Scheduled',
+        appointmentType: apt.appointmentType || apt.AppointmentType || 'Consultation',
+        notes: apt.notes || apt.Notes || null,
+        meetingLink: apt.meetingLink || apt.MeetingLink || 
+                   (apt.notes && apt.notes.match(/https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*/i)?.[0]) || 
+                   (apt.Notes && apt.Notes.match(/https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*/i)?.[0]) || 
+                   null
+      }));
+    } catch (e) {
+      console.warn('[APPOINTMENTS] Failed to fetch appointments:', e?.message || e);
+    }
+    
+    res.json({
+      patientId: tebraPatientId,
+      appointments: appointments,
+      totalCount: appointments.length
+    });
+  } catch (error) {
+    console.error('[APPOINTMENTS] Error:', error);
+    res.status(500).json({ 
+      error: 'FETCH_FAILED', 
+      message: error.message || 'Failed to fetch appointments'
     });
   }
 });

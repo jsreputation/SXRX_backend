@@ -133,6 +133,36 @@ const auth = async (req, res, next) => {
   }
 };
 
+// Optional auth - tries to authenticate but doesn't fail if no token provided
+// Useful for customer account pages where authentication might not be available
+const optionalAuth = async (req, res, next) => {
+  try {
+    // 1) Try JWT first
+    const bearer = req.header('Authorization');
+    const jwtPrincipal = await verifyJwtBearer(bearer);
+    if (jwtPrincipal) {
+      req.user = jwtPrincipal;
+      return next();
+    }
+
+    // 2) Fallback: Shopify Customer Access Token in custom header
+    const shopifyToken = req.header('shopify_access_token');
+    const sfPrincipal = await verifyShopifyCustomerToken(shopifyToken);
+    if (sfPrincipal) {
+      req.user = sfPrincipal;
+      return next();
+    }
+
+    // No auth found - continue without user (for customer account pages)
+    req.user = null;
+    next();
+  } catch (error) {
+    // Auth failed - continue without user (for customer account pages)
+    req.user = null;
+    next();
+  }
+};
+
 const authorize = (...roles) => {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -153,4 +183,4 @@ const getCacheStats = () => {
   return { size: tokenCache.size, entries };
 };
 
-module.exports = { auth, authorize, clearTokenCache, getCacheStats };
+module.exports = { auth, optionalAuth, authorize, clearTokenCache, getCacheStats };
