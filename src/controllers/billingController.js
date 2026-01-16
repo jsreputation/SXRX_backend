@@ -810,12 +810,13 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       endTime: appointmentEndTime.toISOString(),
       patientId: tebraPatientId,
       practiceId: mapping.practiceId,
-      providerId: mapping.defaultProviderId,
+      // Only include providerId if explicitly set - Tebra will use practice default if omitted
+      ...(mapping.defaultProviderId && { providerId: mapping.defaultProviderId }),
       notes: meetingLink ? `Cowlendar booking from order ${shopifyOrderId}. Meeting link: ${meetingLink}` : `Cowlendar booking from order ${shopifyOrderId}.`,
       isRecurring: false
     };
 
-    console.log(`📅 [STEP 5] [ORDER CREATED] Creating appointment in Tebra - Start: ${appointmentStartTime.toISOString()}, End: ${appointmentEndTime.toISOString()}, Patient ID: ${tebraPatientId}, Practice ID: ${mapping.practiceId}, Provider ID: ${mapping.defaultProviderId}`);
+    console.log(`📅 [STEP 5] [ORDER CREATED] Creating appointment in Tebra - Start: ${appointmentStartTime.toISOString()}, End: ${appointmentEndTime.toISOString()}, Patient ID: ${tebraPatientId}, Practice ID: ${mapping.practiceId}, Provider ID: ${mapping.defaultProviderId || '(omitted - using practice default)'}`);
     
     let tebraAppointment = null;
     let tebraAppointmentId = null;

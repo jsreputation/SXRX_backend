@@ -1249,11 +1249,21 @@ ${appointmentXml}
       PatientCaseId: appointmentData.patientCaseId || appointmentData.PatientCaseId || appointmentData.PatientCaseID || null,
       PracticeId: appointmentData.practiceId || (appointmentData.PracticeID && appointmentData.PracticeID !== '') ? appointmentData.PracticeID : appointmentData.PracticeId || '1',
       // Convert ProviderId to integer (Tebra expects integer, not string)
+      // IMPORTANT: Only include ProviderId if explicitly provided - Tebra may reject default values
       ProviderId: (() => {
         const providerId = appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId;
-        if (!providerId) return null; // Omit if not provided
+        // Omit ProviderId if not explicitly provided - let Tebra use practice default
+        if (!providerId || providerId === '1' || providerId === 1) {
+          console.log(`⚠️ [TEBRA] Omitting ProviderId (value: ${providerId}) - Tebra will use practice default`);
+          return null;
+        }
         const parsed = typeof providerId === 'string' ? parseInt(providerId, 10) : providerId;
-        return isNaN(parsed) ? null : parsed; // Return integer or null if invalid
+        if (isNaN(parsed)) {
+          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, omitting`);
+          return null;
+        }
+        console.log(`✅ [TEBRA] Using ProviderId: ${parsed} (converted from ${providerId})`);
+        return parsed;
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
       ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
