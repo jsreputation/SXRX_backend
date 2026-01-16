@@ -42,9 +42,32 @@ const SHOPIFY_CONFIG = {
   apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01'
 };
 
+// Validate Shopify config on startup
+if (!SHOPIFY_CONFIG.shopDomain) {
+  console.warn('⚠️ [SHOPIFY CONFIG] SHOPIFY_STORE or SHOPIFY_STORE_DOMAIN is not set');
+}
+if (!SHOPIFY_CONFIG.accessToken) {
+  console.warn('⚠️ [SHOPIFY CONFIG] SHOPIFY_ACCESS_TOKEN is not set - product tag detection will fail');
+} else {
+  // Log first few and last few chars for verification (don't log full token for security)
+  const tokenPreview = SHOPIFY_CONFIG.accessToken.length > 10 
+    ? `${SHOPIFY_CONFIG.accessToken.substring(0, 8)}...${SHOPIFY_CONFIG.accessToken.substring(SHOPIFY_CONFIG.accessToken.length - 4)}`
+    : 'INVALID';
+  console.log(`✅ [SHOPIFY CONFIG] Access token configured: ${tokenPreview} (length: ${SHOPIFY_CONFIG.accessToken.length})`);
+  console.log(`✅ [SHOPIFY CONFIG] Shop domain: ${SHOPIFY_CONFIG.shopDomain || 'NOT SET'}`);
+}
+
 // Helper to make Shopify Admin API requests
 async function makeShopifyAdminRequest(endpoint, method = 'GET', data = null) {
   try {
+    // Validate config before making request
+    if (!SHOPIFY_CONFIG.shopDomain) {
+      throw new Error('SHOPIFY_STORE or SHOPIFY_STORE_DOMAIN is not configured');
+    }
+    if (!SHOPIFY_CONFIG.accessToken) {
+      throw new Error('SHOPIFY_ACCESS_TOKEN is not configured');
+    }
+    
     const url = `https://${SHOPIFY_CONFIG.shopDomain}/admin/api/${SHOPIFY_CONFIG.apiVersion}/${endpoint}`;
     const config = {
       method,
@@ -62,7 +85,20 @@ async function makeShopifyAdminRequest(endpoint, method = 'GET', data = null) {
     const response = await axios(config);
     return response.data;
   } catch (error) {
-    console.error('Shopify Admin API error:', error.response?.data || error.message);
+    const errorDetails = {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      message: error.response?.data?.errors || error.message,
+      url: error.config?.url
+    };
+    
+    if (error.response?.status === 401) {
+      console.error('❌ [SHOPIFY API] Authentication failed (401) - Check SHOPIFY_ACCESS_TOKEN in .env file');
+      console.error('   Token preview:', SHOPIFY_CONFIG.accessToken ? `${SHOPIFY_CONFIG.accessToken.substring(0, 8)}...${SHOPIFY_CONFIG.accessToken.substring(SHOPIFY_CONFIG.accessToken.length - 4)}` : 'NOT SET');
+      console.error('   Shop domain:', SHOPIFY_CONFIG.shopDomain || 'NOT SET');
+    } else {
+      console.error('❌ [SHOPIFY API] Request failed:', errorDetails);
+    }
     throw error;
   }
 }
@@ -402,13 +438,25 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     // Log at the VERY start to catch ALL webhook requests
     console.log(`🔔 [WEBHOOK RECEIVED] Order Created webhook hit - Timestamp: ${new Date().toISOString()}`);
     console.log(`📥 [WEBHOOK RAW] Request body keys: ${Object.keys(req.body || {}).join(', ')}`);
+    console.log(`🔧 [CONFIG CHECK] Shopify API configured: ${SHOPIFY_CONFIG.shopDomain ? '✅' : '❌'} Domain, ${SHOPIFY_CONFIG.accessToken ? '✅' : '❌'} Token`);
     
     const order = req.body || {};
     const shopifyOrderId = String(order.id || order.order_id || order.name || 'unknown');
     const email = await extractEmailFromOrder(order);
     const shopifyCustomerId = await extractCustomerIdFromOrder(order);
     
+    // Log full order details for debugging
     console.log(`📦 [STEP 3] [ORDER CREATED] Backend received webhook - Processing order ${shopifyOrderId} for customer ${shopifyCustomerId || email || 'unknown'}`);
+    console.log(`📋 [ORDER DETAILS] Order Name: ${order.name || 'N/A'}, Note: "${order.note || '(empty)'}", Source: ${order.source_name || 'N/A'}`);
+    console.log(`📦 [ORDER DETAILS] Line items: ${(order.line_items || []).length} items`);
+    if (order.line_items && order.line_items.length > 0) {
+      order.line_items.forEach((item, idx) => {
+        console.log(`   Item ${idx + 1}: Product ID: ${item.product_id}, Title: "${item.title || 'N/A'}", SKU: ${item.sku || 'N/A'}`);
+        if (item.properties && item.properties.length > 0) {
+          console.log(`      Properties: ${item.properties.map(p => `${p.name}=${p.value}`).join(', ')}`);
+        }
+      });
+    }
 
     // Check if this is a Cowlendar booking order
     // Cowlendar orders typically have:
@@ -433,7 +481,26 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     let hasAppointmentProperties = false;
     let appointmentPropertiesFound = [];
     
+    // Also check line item titles and SKUs for appointment-related keywords
+    let hasAppointmentInTitle = false;
+    
     for (const item of lineItems) {
+      const itemTitle = (item.title || '').toLowerCase();
+      const itemSku = (item.sku || '').toLowerCase();
+      const itemVendor = (item.vendor || '').toLowerCase();
+      
+      // Check title, SKU, vendor for appointment keywords
+      if (itemTitle.includes('appointment') || 
+          itemTitle.includes('booking') || 
+          itemTitle.includes('consultation') ||
+          itemTitle.includes('cowlendar') ||
+          itemSku.includes('appointment') ||
+          itemSku.includes('booking') ||
+          itemVendor.includes('cowlendar')) {
+        hasAppointmentInTitle = true;
+        console.log(`   📌 Found appointment keyword in line item: "${item.title}" (SKU: ${item.sku || 'N/A'})`);
+      }
+      
       const properties = item.properties || [];
       for (const prop of properties) {
         const propName = (prop.name || '').toLowerCase();
@@ -446,9 +513,12 @@ exports.handleShopifyOrderCreated = async (req, res) => {
             propName.includes('start_time') ||
             propName.includes('end_time') ||
             propName.includes('date') ||
+            propName.includes('time') ||
             propValue.includes('meet.google.com') ||
             propValue.includes('zoom.us') ||
-            propValue.includes('cowlendar')) {
+            propValue.includes('cowlendar') ||
+            propValue.includes('appointment') ||
+            propValue.includes('booking')) {
           hasAppointmentProperties = true;
           appointmentPropertiesFound.push(`${prop.name}: ${prop.value}`);
         }
@@ -484,10 +554,11 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     console.log(`   📝 Order note match: ${isCowlendarOrder} (note: "${order.note || '(empty)'}")`);
     console.log(`   🏪 Source name match: ${hasCowlendarSource} (source: "${order.source_name || '(empty)'}")`);
     console.log(`   📋 Appointment properties: ${hasAppointmentProperties} (found: ${appointmentPropertiesFound.length > 0 ? appointmentPropertiesFound.join(', ') : 'none'})`);
+    console.log(`   📌 Appointment in title/SKU: ${hasAppointmentInTitle}`);
     console.log(`   🏷️  Product tag match: ${hasCowlendarProduct}${productTagCheckError ? ` (API error: ${productTagCheckError})` : ''}`);
 
     // Determine if this is a Cowlendar order using ANY of the detection methods
-    const isCowlendarBooking = isCowlendarOrder || hasCowlendarSource || hasAppointmentProperties || hasCowlendarProduct;
+    const isCowlendarBooking = isCowlendarOrder || hasCowlendarSource || hasAppointmentProperties || hasAppointmentInTitle || hasCowlendarProduct;
     
     // If not a Cowlendar order, skip processing (let order paid webhook handle it)
     if (!isCowlendarBooking) {
@@ -512,6 +583,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     if (isCowlendarOrder) detectionMethods.push('order_note');
     if (hasCowlendarSource) detectionMethods.push('source_name');
     if (hasAppointmentProperties) detectionMethods.push('appointment_properties');
+    if (hasAppointmentInTitle) detectionMethods.push('line_item_title_sku');
     if (hasCowlendarProduct) detectionMethods.push('product_tags');
     
     console.log(`✅ [STEP 3] [ORDER CREATED] Cowlendar booking order detected for order ${shopifyOrderId}`);

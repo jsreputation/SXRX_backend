@@ -174,6 +174,24 @@ const server = app.listen(PORT, () => {
     version: APP_VERSION 
   });
   
+  // Validate critical environment variables
+  console.log('\n🔍 [STARTUP] Checking critical environment variables...');
+  if (process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN) {
+    console.log(`✅ SHOPIFY_STORE: ${process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN}`);
+  } else {
+    console.log('❌ SHOPIFY_STORE or SHOPIFY_STORE_DOMAIN: NOT SET');
+  }
+  
+  if (process.env.SHOPIFY_ACCESS_TOKEN) {
+    const tokenPreview = process.env.SHOPIFY_ACCESS_TOKEN.length > 10 
+      ? `${process.env.SHOPIFY_ACCESS_TOKEN.substring(0, 8)}...${process.env.SHOPIFY_ACCESS_TOKEN.substring(process.env.SHOPIFY_ACCESS_TOKEN.length - 4)}`
+      : 'INVALID';
+    console.log(`✅ SHOPIFY_ACCESS_TOKEN: ${tokenPreview} (length: ${process.env.SHOPIFY_ACCESS_TOKEN.length})`);
+  } else {
+    console.log('❌ SHOPIFY_ACCESS_TOKEN: NOT SET');
+  }
+  console.log('');
+  
   // Start monthly billing cron job
   try {
     const { startMonthlyBillingCron } = require('./services/monthlyBillingCron');
