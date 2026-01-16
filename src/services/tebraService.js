@@ -2117,6 +2117,18 @@ ${appointmentXml}
         let appointmentId = appointmentNode.AppointmentID || appointmentNode.AppointmentId || appointmentNode.id;
         
         if (!appointmentId && typeof rawXml === 'string') {
+          // Check for SOAP Fault first (most common error format)
+          const faultMatch = rawXml.match(/<s:Fault>[\s\S]*?<faultstring[^>]*>([^<]*)<\/faultstring>/i);
+          if (faultMatch && faultMatch[1]) {
+            const faultString = faultMatch[1].trim();
+            const faultCodeMatch = rawXml.match(/<faultcode[^>]*>([^<]*)<\/faultcode>/i);
+            const faultCode = faultCodeMatch ? faultCodeMatch[1].trim() : 'Unknown';
+            console.error(`❌ [TEBRA] SOAP Fault in CreateAppointment response:`);
+            console.error(`   Fault Code: ${faultCode}`);
+            console.error(`   Fault String: ${faultString}`);
+            throw new Error(`Tebra CreateAppointment SOAP Fault: ${faultCode} - ${faultString}`);
+          }
+          
           // Try regex extraction directly from XML (like CreatePatient does)
           const idMatch = rawXml.match(/<AppointmentID[^>]*>([^<]+)<\/AppointmentID>/i) || 
                          rawXml.match(/<AppointmentId[^>]*>([^<]+)<\/AppointmentId>/i);

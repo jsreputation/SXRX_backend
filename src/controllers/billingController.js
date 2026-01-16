@@ -805,7 +805,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     const appointmentData = {
       appointmentName: lineItems[0]?.title || 'Telemedicine Consultation',
       appointmentStatus: 'Scheduled',
-      appointmentType: 'Telemedicine',
+      appointmentType: 'P', // 'P' = Patient (valid Tebra enum value; AppointmentMode='Telehealth' handles telemedicine)
       startTime: appointmentStartTime.toISOString(),
       endTime: appointmentEndTime.toISOString(),
       patientId: tebraPatientId,

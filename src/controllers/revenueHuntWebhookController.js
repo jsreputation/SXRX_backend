@@ -174,7 +174,7 @@ async function createTelemedicineAppointment(patientId, mapping, scheduledTime) 
     const appointmentData = {
       appointmentName: 'Telemedicine Consultation',
       appointmentStatus: 'Scheduled',
-      appointmentType: 'Telemedicine',
+      appointmentType: 'P', // 'P' = Patient (valid Tebra enum value; AppointmentMode='Telehealth' handles telemedicine)
       startTime: scheduledTime,
       endTime: new Date(new Date(scheduledTime).getTime() + 30 * 60000), // 30 minutes later
       patientId,
