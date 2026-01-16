@@ -264,12 +264,24 @@ ${patientXml}        </sch:Patient>
         }
         
         // Skip null values for ID fields that should be integers or empty fields that cause parsing errors
+        // IMPORTANT: Do NOT skip ProviderId, ResourceId, ResourceIds, ServiceLocationId, or RecurrenceRule
+        // even if null, because Tebra expects them in a specific order before StartTime
+        // However, since we're iterating in requiredFieldOrder, the order is maintained even if we skip them
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
-          'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId' // Can be omitted if null to use practice defaults
+          'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
+          'Notes', 'DateOfBirth'
+          // Removed: 'ProviderId', 'ResourceId', 'ResourceIds', 'ServiceLocationId' - must maintain order even if null
         ];
         if (value === null && skipNullFields.includes(key)) continue;
+        
+        // For order-critical fields (ProviderId, ResourceId, etc.), skip if null
+        // but the order is maintained by requiredFieldOrder array iteration
+        const orderCriticalFields = ['ProviderId', 'ResourceId', 'ResourceIds', 'ServiceLocationId', 'RecurrenceRule'];
+        if (orderCriticalFields.includes(key) && value === null) {
+          // Skip these if null - order is maintained by iterating requiredFieldOrder
+          continue;
+        }
         
         // Special handling for DateTime fields - don't include if empty
         if ((key === 'StartTime' || key === 'EndTime') && (!value || value === '')) {
@@ -381,6 +393,29 @@ ${patientXml}        </sch:Patient>
     };
     
     const appointmentXml = buildAppointmentXml(appointmentData);
+    
+    // Log the field order in the generated XML for debugging
+    const fieldOrderInXml = [];
+    const fieldMatches = appointmentXml.match(/<sch:(\w+)>/g);
+    if (fieldMatches) {
+      fieldMatches.forEach(match => {
+        const fieldName = match.replace(/<sch:|>/g, '');
+        if (!fieldOrderInXml.includes(fieldName)) {
+          fieldOrderInXml.push(fieldName);
+        }
+      });
+      console.log(`🔍 [TEBRA] Field order in generated XML: ${fieldOrderInXml.join(' -> ')}`);
+      // Check if StartTime appears before the required fields
+      const startTimeIndex = fieldOrderInXml.indexOf('StartTime');
+      const practiceIdIndex = fieldOrderInXml.indexOf('PracticeId');
+      const providerIdIndex = fieldOrderInXml.indexOf('ProviderId');
+      if (startTimeIndex !== -1 && practiceIdIndex !== -1) {
+        console.log(`🔍 [TEBRA] PracticeId at index ${practiceIdIndex}, StartTime at index ${startTimeIndex}`);
+        if (startTimeIndex <= practiceIdIndex + 1) {
+          console.warn(`⚠️ [TEBRA] StartTime appears too early! Expected ProviderId/ResourceId/etc. between PracticeId and StartTime`);
+        }
+      }
+    }
     
     return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:sch="http://www.kareo.com/api/schemas/"

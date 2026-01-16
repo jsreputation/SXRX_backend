@@ -201,6 +201,45 @@ exports.handleRevenueHunt = async (req, res) => {
   try {
     const payload = req.body || {};
 
+    // Validate that this is actually a RevenueHunt questionnaire request
+    // RevenueHunt requests should have questionnaire data (answers, quizId, etc.)
+    // Appointment bookings should NOT trigger this webhook
+    const hasQuestionnaireData = !!(payload.answers || payload.quizId || payload.quiz_id || payload.questionnaire || payload.questions);
+    const hasOrderData = !!(payload.order || payload.orderId || payload.order_id || payload.line_items || payload.lineItems);
+    
+    // Log the request for debugging
+    console.log(`🔔 [REVENUEHUNT] Webhook received - Has questionnaire data: ${hasQuestionnaireData}, Has order data: ${hasOrderData}`);
+    console.log(`📥 [REVENUEHUNT] Request body keys: ${Object.keys(payload).join(', ')}`);
+    
+    // If this looks like an order/appointment booking, reject it
+    if (hasOrderData && !hasQuestionnaireData) {
+      console.warn(`⚠️ [REVENUEHUNT] Rejecting request - appears to be an order/appointment booking, not a questionnaire`);
+      console.warn(`⚠️ [REVENUEHUNT] This webhook is for RevenueHunt questionnaires only. Appointment bookings should use /webhooks/shopify/orders/created`);
+      return res.status(400).json({
+        success: false,
+        message: 'This webhook is for RevenueHunt questionnaire submissions only. Appointment bookings should be handled via Shopify Order Created webhook.',
+        receivedData: {
+          hasOrderData,
+          hasQuestionnaireData,
+          payloadKeys: Object.keys(payload)
+        }
+      });
+    }
+    
+    // If no questionnaire data, also reject (might be a misconfigured webhook)
+    if (!hasQuestionnaireData) {
+      console.warn(`⚠️ [REVENUEHUNT] Rejecting request - no questionnaire data found`);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid RevenueHunt webhook request. Missing questionnaire data (answers, quizId, etc.).',
+        receivedData: {
+          hasOrderData,
+          hasQuestionnaireData,
+          payloadKeys: Object.keys(payload)
+        }
+      });
+    }
+
     // 1) Determine state and provider mapping
     const state = (determineState(payload) || '').toUpperCase();
     
