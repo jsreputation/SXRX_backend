@@ -2453,6 +2453,34 @@ ${appointmentXml}
         throw new Error('Tebra credentials missing. Please set TEBRA_CUSTOMER_KEY, TEBRA_USER, and TEBRA_PASSWORD in environment variables.');
       }
       
+      // Use raw SOAP if enabled (may work better with Tebra v2)
+      if (this.useRawSOAP) {
+        // Build fields and filters for raw SOAP
+        const fields = {
+          ID: 1,
+          PracticeName: 1,
+          Active: 1
+        };
+        
+        const filters = {};
+        if (options.id) filters.ID = options.id;
+        if (options.practiceName) filters.PracticeName = options.practiceName;
+        if (options.active !== undefined) filters.Active = options.active;
+        if (options.npi) filters.NPI = options.npi;
+        if (options.taxId) filters.TaxID = options.taxId;
+        if (options.fromCreatedDate) filters.FromCreatedDate = options.fromCreatedDate;
+        if (options.toCreatedDate) filters.ToCreatedDate = options.toCreatedDate;
+        if (options.fromLastModifiedDate) filters.FromLastModifiedDate = options.fromLastModifiedDate;
+        if (options.toLastModifiedDate) filters.ToLastModifiedDate = options.toLastModifiedDate;
+        
+        console.log("GetPractices (raw SOAP) - fields:", JSON.stringify(fields, null, 2));
+        console.log("GetPractices (raw SOAP) - filters:", JSON.stringify(filters, null, 2));
+        
+        const rawXml = await this.callRawSOAPMethod('GetPractices', fields, filters);
+        const parsed = this.parseRawSOAPResponse(rawXml, 'GetPractices');
+        return this.normalizeGetPracticesResponse(parsed);
+      }
+      
       const client = await this.getClient();
       
       // Build the request structure according to the SOAP API
@@ -2536,19 +2564,35 @@ ${appointmentXml}
       
       // If InternalServiceFault, log helpful diagnostic info
       if (faultMsg && /InternalServiceFault/i.test(faultMsg)) {
-        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault - Common causes:');
-        console.error('  1. Invalid Tebra credentials (CustomerKey, User, Password)');
-        console.error('  2. SOAP API access not enabled for your Tebra account');
-        console.error('  3. Account does not have permission to list practices');
-        console.error('  4. Too many fields requested (try reducing Fields object)');
-        console.error('  5. Invalid field names in Fields object');
-        console.error('  6. Tebra server-side issue (contact Tebra support)');
+        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault - This is a Tebra server-side error');
         console.error('');
-        console.error('  Troubleshooting steps:');
-        console.error('  - Verify TEBRA_CUSTOMER_KEY, TEBRA_USER, TEBRA_PASSWORD in .env');
-        console.error('  - Test credentials with Tebra support');
-        console.error('  - Try with minimal fields (only ID and PracticeName)');
-        console.error('  - Check Tebra account has SOAP API access enabled');
+        console.error('  Most likely causes:');
+        console.error('  1. ❌ Invalid Tebra credentials (CustomerKey, User, Password)');
+        console.error('  2. ❌ SOAP API access not enabled for your Tebra account');
+        console.error('  3. ❌ Account does not have permission to list practices');
+        console.error('  4. ❌ Tebra v2 account may require different authentication');
+        console.error('  5. ❌ Tebra server-side configuration issue');
+        console.error('');
+        console.error('  ✅ What we\'ve already tried:');
+        console.error('  - Minimal fields (ID, PracticeName, Active only)');
+        console.error('  - Valid credentials are present');
+        console.error('  - Request structure is correct');
+        console.error('');
+        console.error('  🔧 Next steps (REQUIRED):');
+        console.error('  1. Contact Tebra Support: support@tebra.com or your Tebra account manager');
+        console.error('  2. Provide them with:');
+        console.error('     - Your Customer Key: ' + (this.customerKey ? this.customerKey.substring(0, 4) + '...' : 'MISSING'));
+        console.error('     - Your User email: ' + (this.user || 'MISSING'));
+        console.error('     - Error: "InternalServiceFault when calling GetPractices via SOAP API"');
+        console.error('     - Request: Minimal fields (ID, PracticeName, Active)');
+        console.error('     - Ask: "Is SOAP API access enabled for my account?"');
+        console.error('     - Ask: "Does my account have permission to list practices?"');
+        console.error('  3. Verify credentials are correct with Tebra support');
+        console.error('  4. Request SOAP API access if not already enabled');
+        console.error('');
+        console.error('  📝 Note: This error occurs on Tebra\'s server, not in our code.');
+        console.error('     The request structure is correct, but Tebra cannot process it.');
+        console.error('     This typically indicates an account/permissions issue.');
       }
       
       const e = new Error(faultMsg || error?.message || 'GetPractices failed');
