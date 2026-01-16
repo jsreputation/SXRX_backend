@@ -2624,7 +2624,8 @@ ${appointmentXml}
         console.log("GetProviders (raw SOAP) - filters:", JSON.stringify(filters, null, 2));
         
         const result = await this.callRawSOAPMethod('GetProviders', fields, filters);
-        return this.parseRawSOAPResponse(result, 'GetProviders');
+        const parsed = this.parseRawSOAPResponse(result, 'GetProviders');
+        return this.normalizeGetProvidersResponse(parsed);
       }
 
       const client = await this.getClient();
