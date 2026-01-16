@@ -200,6 +200,7 @@ ${patientXml}        </sch:Patient>
     const auth = this.getAuthHeader();
     
     // Define the required field order for CreateAppointment based on API documentation
+    // IMPORTANT: PracticeId must come before StartTime and EndTime (Tebra requirement)
     const requiredFieldOrder = [
       'AppointmentId',
       'AppointmentMode', 
@@ -212,7 +213,6 @@ ${patientXml}        </sch:Patient>
       'CreatedAt',
       'CreatedBy',
       'CustomerId',
-      'EndTime',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
       'IsDeleted',
@@ -226,13 +226,14 @@ ${patientXml}        </sch:Patient>
       'PatientSummary',
       'PatientGuid',
       'PatientId',
-      'PracticeId',
+      'PracticeId', // Must come before StartTime and EndTime
       'ProviderId',
       'RecurrenceRule',
       'ResourceId',
       'ResourceIds',
       'ServiceLocationId',
-      'StartTime',
+      'StartTime', // Must come after PracticeId
+      'EndTime', // Must come after PracticeId and StartTime
       'UpdatedAt',
       'UpdatedBy',
       'WasCreatedOnline'
@@ -251,7 +252,13 @@ ${patientXml}        </sch:Patient>
       for (const key of requiredFieldOrder) {
         const value = data[key];
         // Skip if undefined, empty string, or null for certain field types
-        if (value === undefined || value === '') continue;
+        if (value === undefined || value === '') {
+          // Log if PracticeId is being skipped (critical field)
+          if (key === 'PracticeId') {
+            console.warn(`⚠️ [TEBRA] PracticeId is undefined or empty - this will cause errors!`);
+          }
+          continue;
+        }
         
         // Skip null values for ID fields that should be integers or empty fields that cause parsing errors
         const skipNullFields = [
@@ -1287,7 +1294,17 @@ ${appointmentXml}
       Notes: this.buildAppointmentNotes(appointmentData),
       OccurrenceId: appointmentData.occurrenceId || appointmentData.OccurrenceId || null,
       PatientCaseId: appointmentData.patientCaseId || appointmentData.PatientCaseId || appointmentData.PatientCaseID || null,
-      PracticeId: appointmentData.practiceId || (appointmentData.PracticeID && appointmentData.PracticeID !== '') ? appointmentData.PracticeID : appointmentData.PracticeId || '1',
+      // Convert PracticeId to integer (Tebra expects integer, not string)
+      PracticeId: (() => {
+        const practiceId = appointmentData.practiceId || appointmentData.PracticeID || appointmentData.PracticeId || '1';
+        const parsed = typeof practiceId === 'string' ? parseInt(practiceId, 10) : practiceId;
+        if (isNaN(parsed)) {
+          console.error(`❌ [TEBRA] Invalid PracticeId value: ${practiceId}, using default 1`);
+          return 1;
+        }
+        console.log(`✅ [TEBRA] Using PracticeId: ${parsed} (converted from ${practiceId})`);
+        return parsed;
+      })(),
       // Convert ProviderId to integer (Tebra expects integer, not string)
       // IMPORTANT: Only include ProviderId if explicitly provided - Tebra may reject default values
       ProviderId: (() => {
