@@ -354,7 +354,13 @@ Most endpoints require authentication via:
 - `GET /api/geolocation` - Get client geolocation
 - `GET /api/products` - Get product information
 - `GET /webhooks/practices` - List available practices
+  - Returns all practices with IDs, names, and basic information
+  - Uses Raw SOAP API (works better with Tebra v2)
+  - Response: `{ success: true, practices: [...], totalCount: N }`
 - `GET /webhooks/providers/:practiceId` - List providers for practice
+  - Returns all providers for a specific practice ID
+  - Uses Raw SOAP API (works better with Tebra v2)
+  - Response: `{ success: true, providers: [...], totalCount: N, practiceId: "..." }`
 - `GET /webhooks/availability/:state` - Get availability by state
 
 ### Development Endpoints

@@ -404,7 +404,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     const email = await extractEmailFromOrder(order);
     const shopifyCustomerId = await extractCustomerIdFromOrder(order);
     
-    console.log(`📦 [ORDER CREATED] Processing order ${shopifyOrderId} for customer ${shopifyCustomerId || email || 'unknown'}`);
+    console.log(`📦 [STEP 3] [ORDER CREATED] Backend received webhook - Processing order ${shopifyOrderId} for customer ${shopifyCustomerId || email || 'unknown'}`);
 
     // Check if this is a Cowlendar booking order
     // Cowlendar orders typically have:
@@ -449,6 +449,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       });
     }
 
+    console.log(`✅ [STEP 3] [ORDER CREATED] Cowlendar booking order detected for order ${shopifyOrderId}`);
+
     // Determine state from shipping/billing address
     const shippingAddress = order.shipping_address || order.billing_address;
     const state = (shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state || 'CA').toUpperCase();
@@ -474,6 +476,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         const existing = await customerPatientMapService.getByShopifyIdOrEmail(shopifyCustomerId, email);
         if (existing && existing.tebra_patient_id) {
           tebraPatientId = existing.tebra_patient_id;
+          console.log(`✅ [STEP 4] [ORDER CREATED] Found existing patient in Tebra: Patient ID ${tebraPatientId} for customer ${shopifyCustomerId || email}`);
         }
       }
     } catch (e) {
@@ -508,7 +511,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
           await customerPatientMapService.upsert(shopifyCustomerId, email, tebraPatientId);
         }
         
-        console.log(`✅ [ORDER CREATED] Created new patient in Tebra: ${tebraPatientId}`);
+        console.log(`✅ [STEP 4] [ORDER CREATED] Created new patient in Tebra: Patient ID ${tebraPatientId}, Email: ${email}, Practice ID: ${mapping.practiceId}`);
       } catch (e) {
         console.error('[ORDER CREATED] Failed to create patient:', e?.message || e);
         // Continue - we'll try to create appointment anyway
@@ -523,6 +526,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         reason: 'no_patient_id' 
       });
     }
+
+    console.log(`📋 [STEP 5] [ORDER CREATED] Starting appointment extraction for order ${shopifyOrderId}, Patient ID: ${tebraPatientId}`);
 
     // Extract appointment details from order
     // Cowlendar stores booking info in:
@@ -606,6 +611,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
             if ((propName.includes('meeting') || propName.includes('video') || propName.includes('link') || propName.includes('meet') || propName.includes('zoom')) && 
                 (propValue.includes('http') || propValue.includes('meet.google.com') || propValue.includes('zoom.us'))) {
               cowlendarMeetingLink = propValue;
+              console.log(`🔗 [STEP 6] [ORDER CREATED] Found Cowlendar meeting link in order properties: ${cowlendarMeetingLink}`);
               break;
             }
           }
@@ -619,6 +625,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       const noteMatch = order.note.match(/(https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*)/i);
       if (noteMatch) {
         cowlendarMeetingLink = noteMatch[1];
+        console.log(`🔗 [STEP 6] [ORDER CREATED] Found Cowlendar meeting link in order note: ${cowlendarMeetingLink}`);
       }
     }
 
@@ -633,6 +640,13 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         scheduledTime: appointmentStartTime.toISOString()
       });
       meetingLink = meetingDetails ? meetingDetails.meetLink : null;
+      if (meetingLink) {
+        console.log(`🔗 [STEP 6] [ORDER CREATED] Generated backend meeting link: ${meetingLink}`);
+      } else {
+        console.log(`⚠️ [STEP 6] [ORDER CREATED] No meeting link available (Cowlendar didn't provide one and backend generation returned null)`);
+      }
+    } else if (cowlendarMeetingLink) {
+      console.log(`🔗 [STEP 6] [ORDER CREATED] Using Cowlendar-provided meeting link: ${cowlendarMeetingLink}`);
     }
 
     // Create appointment in Tebra
@@ -650,8 +664,12 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       isRecurring: false
     };
 
+    console.log(`📅 [STEP 5] [ORDER CREATED] Creating appointment in Tebra - Start: ${appointmentStartTime.toISOString()}, End: ${appointmentEndTime.toISOString()}, Patient ID: ${tebraPatientId}, Practice ID: ${mapping.practiceId}, Provider ID: ${mapping.defaultProviderId}`);
     const tebraAppointment = await tebraService.createAppointment(appointmentData);
-    console.log(`✅ [ORDER CREATED] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
+    const tebraAppointmentId = tebraAppointment.id || tebraAppointment.ID;
+    console.log(`✅ [STEP 5] [ORDER CREATED] Created appointment in Tebra: Appointment ID ${tebraAppointmentId}`);
+    console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId}, Patient ID: ${tebraPatientId}, Meeting Link: ${meetingLink || 'None'}`);
+    console.log(`📧 [STEP 7] [ORDER CREATED] Sending success response to Shopify webhook - Customer will receive confirmation from Cowlendar`);
 
     res.json({
       success: true,
