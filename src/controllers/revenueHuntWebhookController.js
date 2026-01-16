@@ -341,15 +341,17 @@ exports.handleRevenueHunt = async (req, res) => {
       }
 
       // Return success with purchase approval and chart URL
+      // According to workflow: proceed_to_checkout (not allow_purchase)
       return res.json({ 
         success: true, 
-        action: 'allow_purchase', 
+        action: 'proceed_to_checkout', 
         patientId,
         patientChartUrl,
+        prescriptionId: prescriptionResult?.rxId || prescriptionResult?.prescriptionId || null,
         prescription: prescriptionResult,
         purchaseType: purchaseType, // Include purchase type for frontend
         productId: productId, // Include product ID for frontend
-        message: 'Questionnaire approved. You can proceed with purchase.'
+        message: 'Questionnaire approved. Prescription created. You can proceed to checkout.'
       });
     }
 

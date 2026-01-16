@@ -608,7 +608,8 @@ ${appointmentXml}
             Country: userData.address?.country || 'US',
             PatientExternalID: userData.externalId,
             Practice: {
-              PracticeName: this.practiceName
+              PracticeID: userData.practice?.PracticeID || userData.practiceId || process.env.TEBRA_PRACTICE_ID || null,
+              PracticeName: userData.practice?.PracticeName || this.practiceName
             }
           }
         }
@@ -622,7 +623,38 @@ ${appointmentXml}
       console.log("CreatePatient result:", result);
       return this.normalizeCreatePatientResponse(result);
     } catch (error) {
-      console.error('Tebra SOAP: CreatePatient error', error.message);
+      // Parse SOAP fault if available
+      let faultMsg = null;
+      try {
+        const xml = error?.response?.data || error?.data || '';
+        if (typeof xml === 'string' && /Fault/i.test(xml)) {
+          const faultStringMatch = xml.match(/<faultstring[^>]*>([\s\S]*?)<\/faultstring>/i);
+          faultMsg = faultStringMatch && faultStringMatch[1] ? faultStringMatch[1].trim() : null;
+          if (/InternalServiceFault/i.test(xml)) faultMsg = 'InternalServiceFault';
+        }
+      } catch (_) {}
+      
+      console.error('Tebra SOAP: CreatePatient error', error.message, faultMsg ? `| Fault: ${faultMsg}` : '');
+      console.error('CreatePatient error details:', {
+        message: error.message,
+        fault: faultMsg,
+        args: JSON.stringify(args, null, 2)
+      });
+      
+      // If InternalServiceFault, log helpful diagnostic info
+      if (faultMsg && /InternalServiceFault/i.test(faultMsg)) {
+        console.error('⚠️ [TEBRA] InternalServiceFault - Common causes:');
+        console.error('  1. Invalid or missing PracticeID:', args?.request?.Patient?.Practice?.PracticeID || 'MISSING');
+        console.error('  2. Invalid PracticeName:', args?.request?.Patient?.Practice?.PracticeName || 'MISSING');
+        console.error('  3. Missing required patient fields:');
+        console.error('     - firstName:', args?.request?.Patient?.FirstName || 'MISSING');
+        console.error('     - lastName:', args?.request?.Patient?.LastName || 'MISSING');
+        console.error('     - email:', args?.request?.Patient?.EmailAddress || 'MISSING');
+        console.error('     - state:', args?.request?.Patient?.State || 'MISSING');
+        console.error('  4. Invalid data format (dates, phone numbers, etc.)');
+        console.error('  5. Practice ID not found or inactive in Tebra');
+      }
+      
       throw error;
     }
   }
@@ -1103,7 +1135,8 @@ ${appointmentXml}
     
     // Practice must come after PatientExternalID
     patientData.Practice = {
-      PracticeName: userData.practiceName || this.practiceName
+      PracticeID: userData.practice?.PracticeID || userData.practiceId || process.env.TEBRA_PRACTICE_ID || null,
+      PracticeName: userData.practice?.PracticeName || userData.practiceName || this.practiceName
     };
     
     if (userData.prefix) patientData.Prefix = userData.prefix;
@@ -2414,17 +2447,27 @@ ${appointmentXml}
   // Helper methods to get Practice and Provider information
   async getPractices(options = {}) {
     try {
+      // Validate credentials before making request
+      if (!this.customerKey || !this.user || !this.password) {
+        throw new Error('Tebra credentials missing. Please set TEBRA_CUSTOMER_KEY, TEBRA_USER, and TEBRA_PASSWORD in environment variables.');
+      }
+      
       const client = await this.getClient();
       
       // Build the request structure according to the SOAP API
+      // Start with minimal fields to avoid InternalServiceFault
       const args = {
         request: {
           RequestHeader: this.buildRequestHeader(),
           Fields: {
-            // Basic practice information
+            // Basic practice information (minimal set to avoid errors)
             ID: 1,
             PracticeName: 1,
-            Active: 1,
+            Active: 1
+            // Note: Additional fields can be added if needed, but starting minimal to avoid InternalServiceFault
+            // (comma removed intentionally - this is the last field)
+            // Uncomment below fields if basic request succeeds:
+            /*
             CreatedDate: 1,
             LastModifiedDate: 1,
             // Practice address
@@ -2436,32 +2479,11 @@ ${appointmentXml}
             PracticeCountry: 1,
             // Contact information
             Phone: 1,
-            PhoneExt: 1,
-            Fax: 1,
-            FaxExt: 1,
             Email: 1,
-            WebSite: 1,
             // Business information
             NPI: 1,
-            TaxID: 1,
-            SubscriptionEdition: 1,
-            Notes: 1,
-            // Administrator information
-            AdministratorFullName: 1,
-            AdministratorEmail: 1,
-            AdministratorPhone: 1,
-            AdministratorAddressLine1: 1,
-            AdministratorCity: 1,
-            AdministratorState: 1,
-            AdministratorZipCode: 1,
-            // Billing contact information
-            BillingContactFullName: 1,
-            BillingContactEmail: 1,
-            BillingContactPhone: 1,
-            BillingContactAddressLine1: 1,
-            BillingContactCity: 1,
-            BillingContactState: 1,
-            BillingContactZipCode: 1
+            TaxID: 1
+            */
           },
           Filter: {
             // Basic filters
@@ -2487,8 +2509,52 @@ ${appointmentXml}
       console.log("GetPractices result:", result);
       return this.normalizeGetPracticesResponse(result);
     } catch (error) {
-      console.error('Tebra SOAP: GetPractices error', error.message);
-      throw error;
+      // Parse SOAP fault if available
+      let faultMsg = null;
+      try {
+        const xml = error?.response?.data || error?.data || '';
+        if (typeof xml === 'string' && /Fault/i.test(xml)) {
+          const faultStringMatch = xml.match(/<faultstring[^>]*>([\s\S]*?)<\/faultstring>/i);
+          faultMsg = faultStringMatch && faultStringMatch[1] ? faultStringMatch[1].trim() : null;
+          if (/InternalServiceFault/i.test(xml)) faultMsg = 'InternalServiceFault';
+        }
+      } catch (_) {}
+      
+      console.error('Tebra SOAP: GetPractices error', error.message, faultMsg ? `| Fault: ${faultMsg}` : '');
+      console.error('GetPractices error details:', {
+        message: error.message,
+        fault: faultMsg,
+        args: JSON.stringify(args, null, 2),
+        credentials: {
+          hasCustomerKey: !!this.customerKey,
+          hasUser: !!this.user,
+          hasPassword: !!this.password,
+          customerKeyLength: this.customerKey ? this.customerKey.length : 0
+        }
+      });
+      
+      // If InternalServiceFault, log helpful diagnostic info
+      if (faultMsg && /InternalServiceFault/i.test(faultMsg)) {
+        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault - Common causes:');
+        console.error('  1. Invalid Tebra credentials (CustomerKey, User, Password)');
+        console.error('  2. SOAP API access not enabled for your Tebra account');
+        console.error('  3. Account does not have permission to list practices');
+        console.error('  4. Too many fields requested (try reducing Fields object)');
+        console.error('  5. Invalid field names in Fields object');
+        console.error('  6. Tebra server-side issue (contact Tebra support)');
+        console.error('');
+        console.error('  Troubleshooting steps:');
+        console.error('  - Verify TEBRA_CUSTOMER_KEY, TEBRA_USER, TEBRA_PASSWORD in .env');
+        console.error('  - Test credentials with Tebra support');
+        console.error('  - Try with minimal fields (only ID and PracticeName)');
+        console.error('  - Check Tebra account has SOAP API access enabled');
+      }
+      
+      const e = new Error(faultMsg || error?.message || 'GetPractices failed');
+      e.status = error?.status || 502;
+      e.code = faultMsg ? 'TEBRA_GET_PRACTICES_FAULT' : 'TEBRA_GET_PRACTICES_ERROR';
+      e.details = error?.response?.data || undefined;
+      throw e;
     }
   }
 

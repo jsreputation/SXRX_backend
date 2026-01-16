@@ -342,6 +342,8 @@ Most endpoints require authentication via:
   - Creates/updates patient in Tebra EHR
   - Stores questionnaire as consultation document
   - Handles red flags and routes to consultation if needed
+  - Returns `action: "schedule_consultation"` if red flags detected
+  - Returns `action: "proceed_to_checkout"` if no red flags (creates prescription and adds to cart)
   - Creates prescription if no red flags detected
   - All quiz conditional logic has been validated and fixed
 - `POST /webhooks/shopify/orders/paid` - Shopify order paid webhook
