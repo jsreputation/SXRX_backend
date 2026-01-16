@@ -257,7 +257,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth'
+          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId' // ProviderId can be omitted if null
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -307,7 +307,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth'
+          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId' // ProviderId can be omitted if null
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -1248,7 +1248,13 @@ ${appointmentXml}
       OccurrenceId: appointmentData.occurrenceId || appointmentData.OccurrenceId || null,
       PatientCaseId: appointmentData.patientCaseId || appointmentData.PatientCaseId || appointmentData.PatientCaseID || null,
       PracticeId: appointmentData.practiceId || (appointmentData.PracticeID && appointmentData.PracticeID !== '') ? appointmentData.PracticeID : appointmentData.PracticeId || '1',
-      ProviderId: appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId || '1',
+      // Convert ProviderId to integer (Tebra expects integer, not string)
+      ProviderId: (() => {
+        const providerId = appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId;
+        if (!providerId) return null; // Omit if not provided
+        const parsed = typeof providerId === 'string' ? parseInt(providerId, 10) : providerId;
+        return isNaN(parsed) ? null : parsed; // Return integer or null if invalid
+      })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
       ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
       ServiceLocationId: appointmentData.serviceLocationId || (appointmentData.ServiceLocationID && appointmentData.ServiceLocationID !== 'default-location') ? appointmentData.ServiceLocationID : appointmentData.ServiceLocationId || '1',
