@@ -2446,6 +2446,7 @@ ${appointmentXml}
 
   // Helper methods to get Practice and Provider information
   async getPractices(options = {}) {
+    let args = null; // Declare outside try block for error logging
     try {
       // Validate credentials before making request
       if (!this.customerKey || !this.user || !this.password) {
@@ -2456,7 +2457,7 @@ ${appointmentXml}
       
       // Build the request structure according to the SOAP API
       // Start with minimal fields to avoid InternalServiceFault
-      const args = {
+      args = {
         request: {
           RequestHeader: this.buildRequestHeader(),
           Fields: {
@@ -2524,7 +2525,7 @@ ${appointmentXml}
       console.error('GetPractices error details:', {
         message: error.message,
         fault: faultMsg,
-        args: JSON.stringify(args, null, 2),
+        args: args ? JSON.stringify(args, null, 2) : 'Not initialized (error occurred before args creation)',
         credentials: {
           hasCustomerKey: !!this.customerKey,
           hasUser: !!this.user,
