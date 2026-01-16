@@ -257,7 +257,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId' // ProviderId can be omitted if null
+          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId' // Can be omitted if null to use practice defaults
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -307,7 +307,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId' // ProviderId can be omitted if null
+          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId' // Can be omitted if null to use practice defaults
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -1267,7 +1267,23 @@ ${appointmentXml}
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
       ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
-      ServiceLocationId: appointmentData.serviceLocationId || (appointmentData.ServiceLocationID && appointmentData.ServiceLocationID !== 'default-location') ? appointmentData.ServiceLocationID : appointmentData.ServiceLocationId || '1',
+      // Convert ServiceLocationId - omit if default value to let Tebra use practice default
+      ServiceLocationId: (() => {
+        const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
+        // Omit ServiceLocationId if not explicitly provided or if it's the default '1' - let Tebra use practice default
+        if (!serviceLocationId || serviceLocationId === '1' || serviceLocationId === 1 || serviceLocationId === 'default-location') {
+          console.log(`⚠️ [TEBRA] Omitting ServiceLocationId (value: ${serviceLocationId}) - Tebra will use practice default`);
+          return null;
+        }
+        const parsed = typeof serviceLocationId === 'string' ? parseInt(serviceLocationId, 10) : serviceLocationId;
+        if (isNaN(parsed)) {
+          // If it's not a number, return as-is (might be a string identifier)
+          console.log(`✅ [TEBRA] Using ServiceLocationId: ${serviceLocationId} (as string)`);
+          return serviceLocationId;
+        }
+        console.log(`✅ [TEBRA] Using ServiceLocationId: ${parsed} (converted from ${serviceLocationId})`);
+        return parsed;
+      })(),
       StartTime: appointmentData.startTime || appointmentData.StartTime,
       UpdatedAt: appointmentData.updatedAt || appointmentData.UpdatedAt || new Date().toISOString(),
       UpdatedBy: appointmentData.updatedBy || appointmentData.UpdatedBy || null,
