@@ -412,18 +412,52 @@ exports.handleShopifyOrderCreated = async (req, res) => {
 
     // Check if this is a Cowlendar booking order
     // Cowlendar orders typically have:
-    // 1. Product tags containing "cowlendar" or "booking" or "appointment"
-    // 2. Order notes mentioning "Cowlendar" or "booking" or "appointment"
-    // 3. Line items with specific product tags
-    // 4. Line item properties with appointment data (appointment_date, start_time, etc.)
+    // 1. Order notes mentioning "Cowlendar" or "booking" or "appointment"
+    // 2. Order source name containing "cowlendar"
+    // 3. Line item properties with appointment data (appointment_date, start_time, meeting_link, etc.)
+    // 4. Product tags containing "cowlendar" or "booking" or "appointment" (requires API call)
+    
     const orderNote = (order.note || '').toLowerCase();
+    const orderSourceName = (order.source_name || '').toLowerCase();
+    
+    // Method 1: Check order note
     const isCowlendarOrder = orderNote.includes('cowlendar') || 
                             orderNote.includes('booking') ||
                             orderNote.includes('appointment');
     
-    // Check line items for Cowlendar products
+    // Method 2: Check order source name
+    const hasCowlendarSource = orderSourceName.includes('cowlendar');
+    
+    // Method 3: Check line item properties for appointment data (NO API CALL NEEDED)
     const lineItems = order.line_items || [];
+    let hasAppointmentProperties = false;
+    let appointmentPropertiesFound = [];
+    
+    for (const item of lineItems) {
+      const properties = item.properties || [];
+      for (const prop of properties) {
+        const propName = (prop.name || '').toLowerCase();
+        const propValue = (prop.value || '').toLowerCase();
+        
+        // Check for appointment-related properties
+        if (propName.includes('appointment') || 
+            propName.includes('booking') || 
+            propName.includes('meeting') ||
+            propName.includes('start_time') ||
+            propName.includes('end_time') ||
+            propName.includes('date') ||
+            propValue.includes('meet.google.com') ||
+            propValue.includes('zoom.us') ||
+            propValue.includes('cowlendar')) {
+          hasAppointmentProperties = true;
+          appointmentPropertiesFound.push(`${prop.name}: ${prop.value}`);
+        }
+      }
+    }
+    
+    // Method 4: Check product tags via API (fallback, may fail due to auth issues)
     let hasCowlendarProduct = false;
+    let productTagCheckError = null;
     
     for (const item of lineItems) {
       const productId = item.product_id;
@@ -438,21 +472,31 @@ exports.handleShopifyOrderCreated = async (req, res) => {
             break;
           }
         } catch (e) {
-          console.warn(`[ORDER CREATED] Failed to fetch product ${productId}:`, e?.message);
+          productTagCheckError = e?.message || 'Unknown error';
+          console.warn(`[ORDER CREATED] Failed to fetch product ${productId} (API auth may be invalid):`, e?.message);
+          // Don't break - continue checking other items
         }
       }
     }
+    
+    // Log detection results
+    console.log(`🔍 [COWLENDAR DETECTION] Order ${shopifyOrderId}:`);
+    console.log(`   📝 Order note match: ${isCowlendarOrder} (note: "${order.note || '(empty)'}")`);
+    console.log(`   🏪 Source name match: ${hasCowlendarSource} (source: "${order.source_name || '(empty)'}")`);
+    console.log(`   📋 Appointment properties: ${hasAppointmentProperties} (found: ${appointmentPropertiesFound.length > 0 ? appointmentPropertiesFound.join(', ') : 'none'})`);
+    console.log(`   🏷️  Product tag match: ${hasCowlendarProduct}${productTagCheckError ? ` (API error: ${productTagCheckError})` : ''}`);
 
+    // Determine if this is a Cowlendar order using ANY of the detection methods
+    const isCowlendarBooking = isCowlendarOrder || hasCowlendarSource || hasAppointmentProperties || hasCowlendarProduct;
+    
     // If not a Cowlendar order, skip processing (let order paid webhook handle it)
-    if (!isCowlendarOrder && !hasCowlendarProduct) {
+    if (!isCowlendarBooking) {
       console.log(`⚠️ [ORDER CREATED] Order ${shopifyOrderId} is not a Cowlendar booking - skipping`);
-      console.log(`   📝 Order note: "${order.note || '(empty)'}"`);
-      console.log(`   🏷️  Order note matches Cowlendar: ${isCowlendarOrder}`);
-      console.log(`   📦 Line items count: ${lineItems.length}`);
-      console.log(`   🏷️  Has Cowlendar product tag: ${hasCowlendarProduct}`);
-      if (lineItems.length > 0) {
-        console.log(`   📋 Product IDs in order: ${lineItems.map(item => item.product_id || 'N/A').join(', ')}`);
-      }
+      console.log(`   💡 Tip: If this IS a Cowlendar booking, ensure:`);
+      console.log(`      - Order note contains "cowlendar", "booking", or "appointment"`);
+      console.log(`      - Order source name contains "cowlendar"`);
+      console.log(`      - Line items have properties with appointment data`);
+      console.log(`      - Product has "cowlendar", "booking", or "appointment" tag (requires valid Shopify API credentials)`);
       return res.json({ 
         success: true, 
         skipped: true, 
@@ -463,7 +507,15 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       });
     }
 
+    // Determine which detection method(s) matched
+    const detectionMethods = [];
+    if (isCowlendarOrder) detectionMethods.push('order_note');
+    if (hasCowlendarSource) detectionMethods.push('source_name');
+    if (hasAppointmentProperties) detectionMethods.push('appointment_properties');
+    if (hasCowlendarProduct) detectionMethods.push('product_tags');
+    
     console.log(`✅ [STEP 3] [ORDER CREATED] Cowlendar booking order detected for order ${shopifyOrderId}`);
+    console.log(`   🎯 Detection method(s): ${detectionMethods.join(', ') || 'unknown'}`);
 
     // Determine state from shipping/billing address
     const shippingAddress = order.shipping_address || order.billing_address;
