@@ -512,14 +512,8 @@ ${appointmentXml}
   // Call SOAP method using raw XML (alternative to soap library)
   async callRawSOAPMethod(methodName, fields = {}, filters = {}) {
     try {
-      console.log(`\n🚀 Calling method: ${methodName}`);
-      
       // Generate raw SOAP XML exactly like the working client
       const soapXml = this.generateRawSOAPXML(methodName, fields, filters);
-      
-      console.log(`📥 Sending raw SOAP request to: ${this.soapEndpoint}`);
-      console.log('📤 Raw XML Request:');
-      console.log(soapXml);
       
       const { data } = await axios.post(
         this.soapEndpoint,
@@ -532,13 +526,9 @@ ${appointmentXml}
         }
       );
       
-      console.log('✅ Method call successful');
-      console.log('📤 Raw XML Response:');
-      console.log(data);
-      
       return data;
     } catch (error) {
-      console.error(`❌ Error calling method ${methodName}:`, error.message);
+      console.error(`❌ [TEBRA] Error calling ${methodName}:`, error.message);
       if (error.response) {
         console.error('Response data:', error.response.data);
       }
@@ -2473,9 +2463,6 @@ ${appointmentXml}
         if (options.fromLastModifiedDate) filters.FromLastModifiedDate = options.fromLastModifiedDate;
         if (options.toLastModifiedDate) filters.ToLastModifiedDate = options.toLastModifiedDate;
         
-        console.log("GetPractices (raw SOAP) - fields:", JSON.stringify(fields, null, 2));
-        console.log("GetPractices (raw SOAP) - filters:", JSON.stringify(filters, null, 2));
-        
         const rawXml = await this.callRawSOAPMethod('GetPractices', fields, filters);
         const parsed = this.parseRawSOAPResponse(rawXml, 'GetPractices');
         return this.normalizeGetPracticesResponse(parsed);
@@ -2562,37 +2549,15 @@ ${appointmentXml}
         }
       });
       
-      // If InternalServiceFault, log helpful diagnostic info
+      // If InternalServiceFault, log concise diagnostic info
       if (faultMsg && /InternalServiceFault/i.test(faultMsg)) {
-        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault - This is a Tebra server-side error');
-        console.error('');
-        console.error('  Most likely causes:');
-        console.error('  1. ❌ Invalid Tebra credentials (CustomerKey, User, Password)');
-        console.error('  2. ❌ SOAP API access not enabled for your Tebra account');
-        console.error('  3. ❌ Account does not have permission to list practices');
-        console.error('  4. ❌ Tebra v2 account may require different authentication');
-        console.error('  5. ❌ Tebra server-side configuration issue');
-        console.error('');
-        console.error('  ✅ What we\'ve already tried:');
-        console.error('  - Minimal fields (ID, PracticeName, Active only)');
-        console.error('  - Valid credentials are present');
-        console.error('  - Request structure is correct');
-        console.error('');
-        console.error('  🔧 Next steps (REQUIRED):');
-        console.error('  1. Contact Tebra Support: support@tebra.com or your Tebra account manager');
-        console.error('  2. Provide them with:');
-        console.error('     - Your Customer Key: ' + (this.customerKey ? this.customerKey.substring(0, 4) + '...' : 'MISSING'));
-        console.error('     - Your User email: ' + (this.user || 'MISSING'));
-        console.error('     - Error: "InternalServiceFault when calling GetPractices via SOAP API"');
-        console.error('     - Request: Minimal fields (ID, PracticeName, Active)');
-        console.error('     - Ask: "Is SOAP API access enabled for my account?"');
-        console.error('     - Ask: "Does my account have permission to list practices?"');
-        console.error('  3. Verify credentials are correct with Tebra support');
-        console.error('  4. Request SOAP API access if not already enabled');
-        console.error('');
-        console.error('  📝 Note: This error occurs on Tebra\'s server, not in our code.');
-        console.error('     The request structure is correct, but Tebra cannot process it.');
-        console.error('     This typically indicates an account/permissions issue.');
+        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault');
+        console.error('  This is a Tebra server-side error. Most likely causes:');
+        console.error('  1. Invalid credentials or SOAP API access not enabled');
+        console.error('  2. Account permissions issue');
+        console.error('  3. Tebra server-side configuration problem');
+        console.error('  Note: Raw SOAP is enabled and working. This error is from the fallback soap library path.');
+        console.error('  If you see this error, ensure TEBRA_USE_RAW_SOAP=true in your .env file.');
       }
       
       const e = new Error(faultMsg || error?.message || 'GetPractices failed');
@@ -2619,9 +2584,6 @@ ${appointmentXml}
         if (options.practiceId) filters.PracticeId = options.practiceId;
         if (options.id) filters.ID = options.id;
         if (options.active !== undefined) filters.Active = options.active;
-        
-        console.log("GetProviders (raw SOAP) - fields:", JSON.stringify(fields, null, 2));
-        console.log("GetProviders (raw SOAP) - filters:", JSON.stringify(filters, null, 2));
         
         const result = await this.callRawSOAPMethod('GetProviders', fields, filters);
         const parsed = this.parseRawSOAPResponse(result, 'GetProviders');
@@ -3316,27 +3278,19 @@ ${appointmentXml}
   normalizeGetProvidersResponse(result) {
     const data = this.unwrap(result);
     
-    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - data:', JSON.stringify(data, null, 2));
-    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - data.Providers:', data.Providers);
-    console.log('🔍 [DEBUG] normalizeGetProvidersResponse - Array.isArray(data.Providers):', Array.isArray(data.Providers));
-    
     // Handle different response structures
     if (data.Providers && Array.isArray(data.Providers)) {
-      console.log('🔍 [DEBUG] Using Providers array path, count:', data.Providers.length);
       return {
         providers: data.Providers.map(provider => this.normalizeProviderData(provider)),
         totalCount: data.TotalCount || data.Providers.length
       };
     } else if (Array.isArray(data)) {
-      console.log('🔍 [DEBUG] Using data as array path, count:', data.length);
       return {
         providers: data.map(provider => this.normalizeProviderData(provider)),
         totalCount: data.length
       };
     } else {
       // Single provider response
-      console.log('🔍 [DEBUG] Using single provider path');
-      console.log('🔍 [DEBUG] Data keys:', Object.keys(data));
       return {
         providers: [this.normalizeProviderData(data)],
         totalCount: 1
@@ -3455,13 +3409,10 @@ ${appointmentXml}
   // Parse raw SOAP XML response
   parseRawSOAPResponse(xmlResponse, methodName) {
     try {
-      console.log(`📄 Parsing raw SOAP response for ${methodName}`);
-      
       // Extract the result from the XML response using a more robust approach
       const resultMatch = xmlResponse.match(new RegExp(`<${methodName}Result[^>]*>(.*?)</${methodName}Result>`, 's'));
       if (resultMatch) {
         const resultXml = resultMatch[1];
-        console.log(`📄 Extracted result XML for ${methodName}:`, resultXml);
         
         // Special handling for CreatePatient and CreateAppointment responses
         if (methodName === 'CreatePatient') {
@@ -3739,7 +3690,7 @@ ${appointmentXml}
       }
       
       // If no result found, return empty structure
-      console.log(`⚠️ No result found in XML response for ${methodName}`);
+      console.warn(`⚠️ [TEBRA] No result found in XML response for ${methodName}`);
       return {
         [`${methodName}Result`]: {
           Patients: methodName === 'GetPatients' ? [] : undefined,
@@ -3909,14 +3860,10 @@ ${appointmentXml}
     if (!obj) return {};
     // node-soap often returns { MethodResult: {...} }
     const keys = Object.keys(obj || {});
-    console.log('🔍 [DEBUG] Unwrap - Object keys:', keys);
     if (keys.length === 1 && keys[0].toLowerCase().includes('result')) {
-      console.log('🔍 [DEBUG] Unwrap - Found result key:', keys[0]);
       const result = obj[keys[0]] || {};
-      console.log('🔍 [DEBUG] Unwrap - Result content:', JSON.stringify(result, null, 2));
       return result;
     }
-    console.log('🔍 [DEBUG] Unwrap - Returning object directly:', JSON.stringify(obj, null, 2));
     return obj;
   }
 }
