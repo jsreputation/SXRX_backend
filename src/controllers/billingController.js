@@ -803,18 +803,56 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     };
 
     console.log(`📅 [STEP 5] [ORDER CREATED] Creating appointment in Tebra - Start: ${appointmentStartTime.toISOString()}, End: ${appointmentEndTime.toISOString()}, Patient ID: ${tebraPatientId}, Practice ID: ${mapping.practiceId}, Provider ID: ${mapping.defaultProviderId}`);
-    const tebraAppointment = await tebraService.createAppointment(appointmentData);
-    const tebraAppointmentId = tebraAppointment.id || tebraAppointment.ID;
-    console.log(`✅ [STEP 5] [ORDER CREATED] Created appointment in Tebra: Appointment ID ${tebraAppointmentId}`);
-    console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId}, Patient ID: ${tebraPatientId}, Meeting Link: ${meetingLink || 'None'}`);
+    
+    let tebraAppointment = null;
+    let tebraAppointmentId = null;
+    
+    try {
+      tebraAppointment = await tebraService.createAppointment(appointmentData);
+      
+      // Extract appointment ID from various possible response structures
+      // Raw SOAP returns: { CreateAppointmentResult: { Appointment: { AppointmentID: ... } } }
+      // Normalized returns: { id: ..., appointmentId: ... }
+      if (tebraAppointment?.CreateAppointmentResult?.Appointment) {
+        const appointment = tebraAppointment.CreateAppointmentResult.Appointment;
+        tebraAppointmentId = appointment.AppointmentID || appointment.AppointmentId || appointment.id;
+        console.log(`🔍 [STEP 5] Extracted appointment ID from CreateAppointmentResult.Appointment: ${tebraAppointmentId}`);
+      } else if (tebraAppointment?.Appointment) {
+        const appointment = tebraAppointment.Appointment;
+        tebraAppointmentId = appointment.AppointmentID || appointment.AppointmentId || appointment.id;
+        console.log(`🔍 [STEP 5] Extracted appointment ID from Appointment: ${tebraAppointmentId}`);
+      } else {
+        tebraAppointmentId = tebraAppointment?.id || tebraAppointment?.ID || tebraAppointment?.appointmentId || tebraAppointment?.AppointmentID;
+        console.log(`🔍 [STEP 5] Extracted appointment ID from root: ${tebraAppointmentId}`);
+      }
+      
+      // Log full response for debugging if ID is still missing
+      if (!tebraAppointmentId) {
+        console.warn(`⚠️ [STEP 5] Could not extract appointment ID from response. Full response:`, JSON.stringify(tebraAppointment, null, 2));
+      }
+      
+    } catch (appointmentError) {
+      console.error(`❌ [STEP 5] [ORDER CREATED] Failed to create appointment in Tebra:`, appointmentError?.message || appointmentError);
+      console.error(`   Error details:`, appointmentError?.response?.data || appointmentError?.stack);
+      // Continue - we'll still return success to Shopify to avoid webhook retries
+      // The appointment creation can be retried manually if needed
+    }
+    
+    if (tebraAppointmentId) {
+      console.log(`✅ [STEP 5] [ORDER CREATED] Created appointment in Tebra: Appointment ID ${tebraAppointmentId}`);
+    } else {
+      console.warn(`⚠️ [STEP 5] [ORDER CREATED] Appointment creation completed but no Appointment ID returned`);
+    }
+    
+    console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId || 'N/A'}, Patient ID: ${tebraPatientId}, Meeting Link: ${meetingLink || 'None'}`);
     console.log(`📧 [STEP 7] [ORDER CREATED] Sending success response to Shopify webhook - Customer will receive confirmation from Cowlendar`);
 
     res.json({
       success: true,
-      tebraAppointmentId: tebraAppointment.id || tebraAppointment.ID,
+      tebraAppointmentId: tebraAppointmentId || null,
       meetingLink: meetingLink,
       patientId: tebraPatientId,
-      message: 'Cowlendar booking synced to Tebra successfully'
+      message: tebraAppointmentId ? 'Cowlendar booking synced to Tebra successfully' : 'Cowlendar booking processed but appointment ID not available'
     });
   } catch (error) {
     console.error('[ORDER CREATED] Error:', error);
