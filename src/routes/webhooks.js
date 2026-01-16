@@ -111,6 +111,17 @@ const cowlendarWebhookController = require('../controllers/cowlendarWebhookContr
 router.post('/cowlendar/appointment-created', express.json({ limit: '1mb' }), cowlendarWebhookController.handleAppointmentCreated);
 router.post('/cowlendar/appointment-updated', express.json({ limit: '1mb' }), cowlendarWebhookController.handleAppointmentUpdated);
 
+// Test endpoint to verify webhook connectivity
+router.get('/shopify/orders/created/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Webhook endpoint is accessible',
+    endpoint: '/webhooks/shopify/orders/created',
+    timestamp: new Date().toISOString(),
+    instructions: 'This endpoint confirms your webhook URL is reachable. Make sure Shopify webhook points to POST /webhooks/shopify/orders/created'
+  });
+});
+
 module.exports = router;
 
 

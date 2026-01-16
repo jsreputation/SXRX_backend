@@ -399,6 +399,10 @@ exports.handleShopifyOrderPaid = async (req, res) => {
  */
 exports.handleShopifyOrderCreated = async (req, res) => {
   try {
+    // Log at the VERY start to catch ALL webhook requests
+    console.log(`🔔 [WEBHOOK RECEIVED] Order Created webhook hit - Timestamp: ${new Date().toISOString()}`);
+    console.log(`📥 [WEBHOOK RAW] Request body keys: ${Object.keys(req.body || {}).join(', ')}`);
+    
     const order = req.body || {};
     const shopifyOrderId = String(order.id || order.order_id || order.name || 'unknown');
     const email = await extractEmailFromOrder(order);
@@ -441,11 +445,21 @@ exports.handleShopifyOrderCreated = async (req, res) => {
 
     // If not a Cowlendar order, skip processing (let order paid webhook handle it)
     if (!isCowlendarOrder && !hasCowlendarProduct) {
-      console.log(`ℹ️ [ORDER CREATED] Order ${shopifyOrderId} is not a Cowlendar booking - skipping`);
+      console.log(`⚠️ [ORDER CREATED] Order ${shopifyOrderId} is not a Cowlendar booking - skipping`);
+      console.log(`   📝 Order note: "${order.note || '(empty)'}"`);
+      console.log(`   🏷️  Order note matches Cowlendar: ${isCowlendarOrder}`);
+      console.log(`   📦 Line items count: ${lineItems.length}`);
+      console.log(`   🏷️  Has Cowlendar product tag: ${hasCowlendarProduct}`);
+      if (lineItems.length > 0) {
+        console.log(`   📋 Product IDs in order: ${lineItems.map(item => item.product_id || 'N/A').join(', ')}`);
+      }
       return res.json({ 
         success: true, 
         skipped: true, 
-        reason: 'not_cowlendar_order' 
+        reason: 'not_cowlendar_order',
+        orderNote: order.note || '',
+        lineItemCount: lineItems.length,
+        productIds: lineItems.map(item => item.product_id).filter(Boolean)
       });
     }
 
