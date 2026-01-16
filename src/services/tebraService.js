@@ -1347,40 +1347,42 @@ ${appointmentXml}
       })(),
       // Convert ProviderId to integer (Tebra expects integer, not string)
       // IMPORTANT: Tebra requires ProviderId to appear in XML before StartTime for field ordering
-      // We'll set it to 0 (or omit if Tebra accepts that) to maintain order
+      // Use the provided value (even if it's 1) to maintain field order
       ProviderId: (() => {
         const providerId = appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId;
-        // For field ordering, we need to include ProviderId even if using practice default
-        // Set to 0 as a sentinel value that Tebra might accept as "use practice default"
-        // If Tebra rejects 0, we'll need to include it as empty or find another approach
-        if (!providerId || providerId === '1' || providerId === 1) {
-          console.log(`⚠️ [TEBRA] Setting ProviderId to 0 (was ${providerId}) - Tebra will use practice default, but field order maintained`);
-          return 0; // Use 0 as sentinel to maintain field order
+        // For field ordering, we need to include ProviderId
+        // Use provided value or default to 1 (practice default provider)
+        if (!providerId) {
+          console.log(`⚠️ [TEBRA] No ProviderId provided, using default 1 for field order`);
+          return 1; // Use practice default provider
         }
         const parsed = typeof providerId === 'string' ? parseInt(providerId, 10) : providerId;
         if (isNaN(parsed)) {
-          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, setting to 0 for field order`);
-          return 0;
+          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, using default 1`);
+          return 1;
         }
         console.log(`✅ [TEBRA] Using ProviderId: ${parsed} (converted from ${providerId})`);
         return parsed;
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
       ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
-      // Convert ServiceLocationId - set to 0 to maintain field order if not provided
+      // Convert ServiceLocationId - Tebra requires it to be > 0, so use 1 (practice default) if not provided
       ServiceLocationId: (() => {
         const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
-        // For field ordering, we need to include ServiceLocationId even if using practice default
-        // Set to 0 as a sentinel value that Tebra might accept as "use practice default"
-        if (!serviceLocationId || serviceLocationId === '1' || serviceLocationId === 1 || serviceLocationId === 'default-location') {
-          console.log(`⚠️ [TEBRA] Setting ServiceLocationId to 0 (was ${serviceLocationId}) - Tebra will use practice default, but field order maintained`);
-          return 0; // Use 0 as sentinel to maintain field order
+        // Tebra requires ServiceLocationId to be > 0, so use 1 (practice default) if not provided
+        if (!serviceLocationId || serviceLocationId === 'default-location') {
+          console.log(`⚠️ [TEBRA] No ServiceLocationId provided, using default 1 (practice default service location)`);
+          return 1; // Use practice default service location
         }
         const parsed = typeof serviceLocationId === 'string' ? parseInt(serviceLocationId, 10) : serviceLocationId;
         if (isNaN(parsed)) {
           // If it's not a number, return as-is (might be a string identifier)
           console.log(`✅ [TEBRA] Using ServiceLocationId: ${serviceLocationId} (as string)`);
           return serviceLocationId;
+        }
+        if (parsed <= 0) {
+          console.log(`⚠️ [TEBRA] ServiceLocationId ${parsed} is <= 0, using default 1`);
+          return 1; // Tebra requires > 0
         }
         console.log(`✅ [TEBRA] Using ServiceLocationId: ${parsed} (converted from ${serviceLocationId})`);
         return parsed;
