@@ -291,9 +291,36 @@ ${patientXml}        </sch:Patient>
           xml += `${indent}</sch:${key}>\n`;
         } else {
           // Handle simple values and Date objects
-          // Convert Date objects to ISO string for SOAP API
-          const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
-          xml += `${indent}<sch:${key}>${finalValue}</sch:${key}>\n`;
+          // Special handling for DateTime fields - Tebra may require specific format
+          if (key === 'StartTime' || key === 'EndTime' || key === 'CreatedAt' || key === 'UpdatedAt') {
+            let dateValue;
+            if (value instanceof Date) {
+              dateValue = value.toISOString();
+            } else if (typeof value === 'string') {
+              // Try to parse and reformat if it's a string
+              try {
+                const parsed = new Date(value);
+                if (!isNaN(parsed.getTime())) {
+                  dateValue = parsed.toISOString();
+                } else {
+                  dateValue = value; // Use as-is if can't parse
+                }
+              } catch (e) {
+                dateValue = value; // Use as-is if parsing fails
+              }
+            } else {
+              dateValue = value === null ? '' : String(value);
+            }
+            // Log DateTime values for debugging
+            if (key === 'StartTime' || key === 'EndTime') {
+              console.log(`🔍 [TEBRA] DateTime field ${key}: ${dateValue} (original: ${value}, type: ${typeof value})`);
+            }
+            xml += `${indent}<sch:${key}>${dateValue}</sch:${key}>\n`;
+          } else {
+            // Convert Date objects to ISO string for SOAP API
+            const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
+            xml += `${indent}<sch:${key}>${finalValue}</sch:${key}>\n`;
+          }
         }
       }
       
@@ -514,6 +541,19 @@ ${appointmentXml}
     try {
       // Generate raw SOAP XML exactly like the working client
       const soapXml = this.generateRawSOAPXML(methodName, fields, filters);
+      
+      // Log SOAP request XML for CreateAppointment (truncate if too long)
+      if (methodName === 'CreateAppointment') {
+        const requestPreview = soapXml.length > 2000 
+          ? soapXml.substring(0, 2000) + '...' 
+          : soapXml;
+        console.log('🔍 [TEBRA] CreateAppointment SOAP request XML (preview):', requestPreview);
+        // Also log just the StartTime/EndTime parts
+        const startTimeMatch = soapXml.match(/<sch:StartTime[^>]*>([^<]+)<\/sch:StartTime>/i);
+        const endTimeMatch = soapXml.match(/<sch:EndTime[^>]*>([^<]+)<\/sch:EndTime>/i);
+        if (startTimeMatch) console.log(`🔍 [TEBRA] StartTime in XML: ${startTimeMatch[1]}`);
+        if (endTimeMatch) console.log(`🔍 [TEBRA] EndTime in XML: ${endTimeMatch[1]}`);
+      }
       
       const { data } = await axios.post(
         this.soapEndpoint,
@@ -2134,6 +2174,16 @@ ${appointmentXml}
       if (this.useRawSOAP) {
         const appointment = await this.buildAppointmentData(appointmentData);
         console.log('🔍 Built appointment data:', JSON.stringify(appointment, null, 2));
+        // Log the appointment data being sent (especially DateTime fields)
+        console.log('🔍 [TEBRA] Appointment data being sent:', JSON.stringify({
+          StartTime: appointment.StartTime,
+          EndTime: appointment.EndTime,
+          PatientId: appointment.PatientId,
+          PracticeId: appointment.PracticeId,
+          AppointmentType: appointment.AppointmentType,
+          AppointmentMode: appointment.AppointmentMode
+        }, null, 2));
+        
         const rawXml = await this.callRawSOAPMethod('CreateAppointment', appointment, {});
         
         // Log raw XML response for debugging (truncate if too long)
