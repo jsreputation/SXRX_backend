@@ -3525,6 +3525,44 @@ ${appointmentXml}
           };
         }
         
+        // Handle GetPractices response
+        if (methodName === 'GetPractices') {
+          const practices = [];
+          const practiceMatches = resultXml.match(/<PracticeData[^>]*>(.*?)<\/PracticeData>/gs);
+          
+          if (practiceMatches) {
+            for (const practiceXml of practiceMatches) {
+              const practice = {};
+              
+              // Extract practice fields
+              const fieldMatches = practiceXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
+              if (fieldMatches) {
+                for (const fieldMatch of fieldMatches) {
+                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
+                  if (fieldNameMatch) {
+                    const fieldName = fieldNameMatch[1];
+                    const fieldValue = fieldNameMatch[2];
+                    practice[fieldName] = fieldValue;
+                  }
+                }
+              }
+              
+              if (Object.keys(practice).length > 0) {
+                practices.push(practice);
+              }
+            }
+          }
+          
+          // Return structure that matches what the normalizers expect
+          return {
+            [`${methodName}Result`]: {
+              Practices: practices,
+              TotalCount: practices.length,
+              rawXml: resultXml
+            }
+          };
+        }
+        
         // Handle GetPatients response
         if (methodName === 'GetPatients') {
           const patients = [];
