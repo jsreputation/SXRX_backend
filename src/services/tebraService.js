@@ -3153,8 +3153,8 @@ ${appointmentXml}
     
     // Handle date and time fields from GetAppointment API
     // GetAppointment returns StartTime and EndTime in UTC format (e.g., 2020-01-24T22:00:00.000Z)
-    const startTime = appointment.StartTime || appointment.startTime;
-    const endTime = appointment.EndTime || appointment.endTime;
+    const startDateTimeRaw = appointment.StartTime || appointment.startTime;
+    const endDateTimeRaw = appointment.EndTime || appointment.endTime;
     
     // Extract date and time components from UTC datetime strings
     let startDate = null;
@@ -3162,25 +3162,25 @@ ${appointmentXml}
     let endDate = null;
     let endTimeFormatted = null;
     
-    if (startTime) {
+    if (startDateTimeRaw) {
       try {
-        const startDateTime = new Date(startTime);
+        const startDateTime = new Date(startDateTimeRaw);
         startDate = startDateTime.toISOString().split('T')[0]; // YYYY-MM-DD
         startTimeFormatted = startDateTime.toTimeString().split(' ')[0]; // HH:MM:SS
       } catch (error) {
-        console.warn('Failed to parse start time:', startTime);
-        startTimeFormatted = startTime;
+        console.warn('Failed to parse start time:', startDateTimeRaw);
+        startTimeFormatted = startDateTimeRaw;
       }
     }
     
-    if (endTime) {
+    if (endDateTimeRaw) {
       try {
-        const endDateTime = new Date(endTime);
+        const endDateTime = new Date(endDateTimeRaw);
         endDate = endDateTime.toISOString().split('T')[0]; // YYYY-MM-DD
         endTimeFormatted = endDateTime.toTimeString().split(' ')[0]; // HH:MM:SS
       } catch (error) {
-        console.warn('Failed to parse end time:', endTime);
-        endTimeFormatted = endTime;
+        console.warn('Failed to parse end time:', endDateTimeRaw);
+        endTimeFormatted = endDateTimeRaw;
       }
     }
     
@@ -3189,6 +3189,9 @@ ${appointmentXml}
       appointmentId: appointment.ID || appointment.AppointmentID || appointment.appointmentId || appointment.AppointmentId,
       // Extract patientId to top level for filter compatibility
       patientId: appointment.PatientID || appointment.PatientId || appointment.patientId,
+      // Preserve raw UTC datetimes from GetAppointment (best source for full date+time)
+      startDateTime: startDateTimeRaw || null,
+      endDateTime: endDateTimeRaw || null,
       startDate: startDate,
       endDate: endDate,
       startTime: startTimeFormatted,

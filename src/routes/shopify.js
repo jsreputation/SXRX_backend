@@ -385,8 +385,12 @@ router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
       appointments = (appointmentsResponse.appointments || appointmentsResponse.Appointments || []).map(apt => ({
         id: apt.id || apt.ID,
         appointmentName: apt.appointmentName || apt.AppointmentName,
-        startTime: apt.startTime || apt.StartTime,
-        endTime: apt.endTime || apt.EndTime,
+        // Prefer full datetime when available (Tebra GetAppointment returns UTC datetime)
+        startTime: apt.startDateTime || apt.StartTime || apt.startTime,
+        endTime: apt.endDateTime || apt.EndTime || apt.endTime,
+        // Also provide date parts if caller wants them
+        startDate: apt.startDate || null,
+        endDate: apt.endDate || null,
         status: apt.appointmentStatus || apt.AppointmentStatus || apt.status,
         appointmentType: apt.appointmentType || apt.AppointmentType,
         meetingLink: apt.meetingLink || apt.MeetingLink || apt.notes?.match(/https?:\/\/[^\s]+/)?.[0] || null
@@ -484,8 +488,11 @@ router.get('/customers/:customerId/appointments', optionalAuth, async (req, res)
       appointments = (appointmentsResponse.appointments || appointmentsResponse.Appointments || []).map(apt => ({
         id: apt.id || apt.ID || apt.AppointmentID || apt.AppointmentId,
         appointmentName: apt.appointmentName || apt.AppointmentName || 'Appointment',
-        startTime: apt.startTime || apt.StartTime || apt.StartDate,
-        endTime: apt.endTime || apt.EndTime || apt.EndDate,
+        // Prefer full datetime when available (Tebra GetAppointment returns UTC datetime)
+        startTime: apt.startDateTime || apt.StartTime || apt.startTime || apt.StartDate,
+        endTime: apt.endDateTime || apt.EndTime || apt.endTime || apt.EndDate,
+        startDate: apt.startDate || null,
+        endDate: apt.endDate || null,
         status: apt.appointmentStatus || apt.AppointmentStatus || apt.status || 'Scheduled',
         appointmentType: apt.appointmentType || apt.AppointmentType || 'Consultation',
         notes: apt.notes || apt.Notes || null,
