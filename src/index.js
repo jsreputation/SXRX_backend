@@ -21,17 +21,71 @@ app.use('/webhooks', require('./routes/stripeWebhook'));
 
 // Middleware
 // CORS with allowed origins from env (comma-separated)
-const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-app.use(cors({
+function normalizeOrigin(input) {
+  if (!input) return null;
+  try {
+    // If already an origin, normalize via URL
+    const u = new URL(input);
+    return u.origin;
+  } catch (e) {
+    // If it's a hostname like sxrx-ca.myshopify.com, add https://
+    try {
+      const u = new URL(`https://${String(input).replace(/^https?:\/\//i, '').replace(/\/+$/, '')}`);
+      return u.origin;
+    } catch {
+      return null;
+    }
+  }
+}
+
+const allowedOrigins = new Set(
+  (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(normalizeOrigin)
+    .filter(Boolean)
+);
+
+// Helpful defaults to reduce misconfig:
+// - FRONTEND_URL is already required for some flows (payments) and often equals your storefront domain.
+const frontendOrigin = normalizeOrigin(process.env.FRONTEND_URL);
+if (frontendOrigin) allowedOrigins.add(frontendOrigin);
+
+// - Allow the permanent Shopify domain if provided in env
+const shopDomain = process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
+const shopOrigin = normalizeOrigin(shopDomain);
+if (shopOrigin) allowedOrigins.add(shopOrigin);
+
+const corsOptions = {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true); // allow non-browser or same-origin
-    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return cb(null, true);
+
+    const normalized = normalizeOrigin(origin) || origin;
+    // If no allowlist is configured, allow all (useful for local/ngrok dev).
+    if (allowedOrigins.size === 0) return cb(null, true);
+
+    if (allowedOrigins.has(normalized)) return cb(null, true);
+
+    // Common Shopify storefront domains (optional): allow *.myshopify.com if explicitly enabled
+    if (String(process.env.CORS_ALLOW_MYSHOPIFY || 'false').toLowerCase() === 'true') {
+      try {
+        const host = new URL(normalized).hostname;
+        if (host.endsWith('.myshopify.com')) return cb(null, true);
+      } catch (e) {}
+    }
+
+    console.warn(`⚠️ [CORS] Blocked origin: ${origin}. Allowed: ${Array.from(allowedOrigins).join(', ') || '(none)'}`);
     return cb(new Error('CORS: origin not allowed'));
   },
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token'],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-}));
+};
+
+app.use(cors(corsOptions));
+// Ensure preflight OPTIONS always returns CORS headers
+app.options('*', cors(corsOptions));
 app.use(requestId);
 app.use(helmet());
 app.use(morgan(':method :url :status :res[content-length] - :response-time ms reqId=:req[id]'));
