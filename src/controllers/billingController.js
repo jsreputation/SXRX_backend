@@ -8,6 +8,7 @@ const tebraBillingService = require('../services/tebraBillingService');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
 const axios = require('axios');
+const moment = require('moment-timezone');
 
 async function extractEmailFromOrder(body) {
   // Try common locations for customer email
@@ -90,6 +91,206 @@ function extractContactFromLineItemProperties(lineItems) {
   }
 
   return out;
+}
+
+function normalizePropKey(key) {
+  return String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function buildLineItemPropsMap(properties) {
+  const props = Array.isArray(properties) ? properties : [];
+  const map = {};
+  for (const p of props) {
+    const rawKey = p?.name ?? p?.key ?? '';
+    const rawVal = p?.value ?? p?.val ?? '';
+    const k = normalizePropKey(rawKey);
+    const v = safeTrim(rawVal);
+    if (!k || v === null) continue;
+    // Preserve the first value for a key, but also keep all values in case.
+    if (!map[k]) map[k] = { value: v, rawKey: String(rawKey), all: [v] };
+    else map[k].all.push(v);
+  }
+  return map;
+}
+
+function parseDurationMinutes(raw) {
+  const s = safeTrim(raw);
+  if (!s) return null;
+
+  // ISO-ish "PT30M"
+  const iso = s.match(/^pt(\d+)m$/i);
+  if (iso) return parseInt(iso[1], 10);
+
+  // "HH:MM" or "HH:MM:SS"
+  const hhmm = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (hhmm) {
+    const h = parseInt(hhmm[1], 10);
+    const m = parseInt(hhmm[2], 10);
+    const sec = hhmm[3] ? parseInt(hhmm[3], 10) : 0;
+    return h * 60 + m + Math.round(sec / 60);
+  }
+
+  // "30", "30 min", "30 minutes", "1.5 hours"
+  const num = s.match(/(\d+(?:\.\d+)?)/);
+  if (num) {
+    const n = parseFloat(num[1]);
+    if (Number.isFinite(n)) {
+      const lower = s.toLowerCase();
+      if (lower.includes('hour')) return Math.round(n * 60);
+      if (lower.includes('sec')) return Math.max(1, Math.round(n / 60));
+
+      // Heuristic: very large numbers are probably seconds or milliseconds.
+      if (n >= 100000) return Math.max(1, Math.round(n / 60000)); // ms -> min
+      if (n >= 1000) return Math.max(1, Math.round(n / 60)); // sec -> min
+
+      return Math.round(n);
+    }
+  }
+
+  return null;
+}
+
+function parseCowlendarDateTime(value, tz) {
+  const s = safeTrim(value);
+  if (!s) return null;
+
+  // epoch ms/sec
+  if (/^\d{10,13}$/.test(s)) {
+    const n = parseInt(s, 10);
+    if (!Number.isFinite(n)) return null;
+    const ms = s.length === 10 ? n * 1000 : n;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // If it includes an offset/Z, preserve it.
+  const zoneParsed = moment.parseZone(s, moment.ISO_8601, true);
+  if (zoneParsed.isValid() && /z|[+\-]\d{2}:?\d{2}$/i.test(s)) {
+    return zoneParsed.toDate();
+  }
+
+  // Try ISO-ish / RFC / generic parse with moment (best-effort).
+  const m1 = moment(s, moment.ISO_8601, true);
+  if (m1.isValid()) return m1.toDate();
+
+  // If no timezone info, interpret in provided tz (or UTC).
+  const zone = tz || process.env.DEFAULT_BOOKING_TIMEZONE || process.env.SHOPIFY_TIMEZONE || 'UTC';
+  const mtz = moment.tz(s, zone);
+  if (mtz.isValid()) return mtz.toDate();
+
+  // Fallback to Date()
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function extractCowlendarBookingMeta(order, lineItems) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const candidates = [];
+
+  for (const item of items) {
+    const properties = item?.properties || [];
+    const map = buildLineItemPropsMap(properties);
+    const keys = Object.keys(map);
+
+    const get = (...names) => {
+      for (const n of names) {
+        const k = normalizePropKey(n);
+        if (map[k]?.value) return map[k].value;
+      }
+      return null;
+    };
+
+    const tz =
+      get('timezone', 'time_zone', 'tz') ||
+      (order && (order.timezone || order.time_zone)) ||
+      null;
+
+    // Common single-field datetime keys
+    const startRaw =
+      get('appointment_start', 'booking_start', 'start_datetime', 'start_date_time', 'appointment_datetime', 'scheduled_datetime') ||
+      get('appointment_time', 'booking_time', 'scheduled_time') ||
+      null;
+
+    // Split date/time keys
+    const dateRaw =
+      get('appointment_date', 'booking_date', 'date', 'start_date', 'scheduled_date') ||
+      null;
+    const timeRaw =
+      get('start_time', 'time', 'scheduled_time', 'appointment_time', 'booking_time') ||
+      null;
+
+    // Duration keys
+    const durationRaw =
+      get('duration', 'appointment_duration', 'booking_duration', 'service_duration') ||
+      null;
+
+    const durationMin = parseDurationMinutes(durationRaw);
+
+    // Determine start date
+    let startDate = null;
+    let startSource = null;
+    let usedParts = null;
+
+    if (startRaw) {
+      const parsed = parseCowlendarDateTime(startRaw, tz);
+      if (parsed) {
+        startDate = parsed;
+        startSource = 'single_field';
+        usedParts = { startKey: map[normalizePropKey('appointment_start')]?.rawKey || 'unknown', startRaw, tz: tz || null };
+      }
+    }
+
+    if (!startDate && dateRaw && timeRaw) {
+      // Combine into an ISO-ish string and parse in tz
+      const combined = `${dateRaw} ${timeRaw}`;
+      const parsed = parseCowlendarDateTime(combined, tz);
+      if (parsed) {
+        startDate = parsed;
+        startSource = 'date_time_fields';
+        usedParts = { dateRaw, timeRaw, tz: tz || null };
+      }
+    }
+
+    // Some apps store date only in "appointment_date" and time in "start_time" but date is YYYY-MM-DD and time is HH:mm
+    if (!startDate && (dateRaw || timeRaw)) {
+      const parsed = parseCowlendarDateTime(startRaw || dateRaw || timeRaw, tz);
+      if (parsed) {
+        startDate = parsed;
+        startSource = 'fallback_single';
+        usedParts = { raw: startRaw || dateRaw || timeRaw, tz: tz || null };
+      }
+    }
+
+    // Score how likely this item is the booking item
+    const title = String(item?.title || '').toLowerCase();
+    const score =
+      (startDate ? 5 : 0) +
+      (dateRaw && timeRaw ? 3 : 0) +
+      (durationMin ? 1 : 0) +
+      (keys.length ? 1 : 0) +
+      (title.includes('appointment') || title.includes('booking') || title.includes('consultation') || title.includes('cowlendar') ? 1 : 0);
+
+    candidates.push({
+      score,
+      itemTitle: item?.title || null,
+      startDate,
+      startSource,
+      usedParts,
+      durationMin,
+      durationRaw,
+      tz: tz || null,
+      keysPreview: keys.slice(0, 20),
+    });
+  }
+
+  candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return { best: candidates[0] || null, candidates };
 }
 
 // Check if product requires subscription (via tags or metafields)
@@ -793,63 +994,45 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     // 3. Order metafields (if configured)
     let appointmentStartTime = order.created_at ? new Date(order.created_at) : new Date();
     let appointmentDuration = 30; // Default 30 minutes
-    
-    // Try to extract appointment time and duration from line item properties
-    for (const item of lineItems) {
-      const properties = item.properties || [];
-      
-      // Look for appointment start time in various property names
-      const startTimeProp = properties.find(p => {
-        const name = (p.name || '').toLowerCase();
-        return name === 'appointment_start' || 
-               name === 'appointment_date' ||
-               name === 'start_time' || 
-               name === 'booking_time' ||
-               name === 'appointment_time' ||
-               name === 'scheduled_time';
-      });
-      
-      if (startTimeProp && startTimeProp.value) {
-        try {
-          const parsedTime = new Date(startTimeProp.value);
-          if (!isNaN(parsedTime.getTime())) {
-            appointmentStartTime = parsedTime;
-            console.log(`📅 [ORDER CREATED] Extracted appointment time from property: ${appointmentStartTime.toISOString()}`);
-          }
-        } catch (e) {
-          console.warn('[ORDER CREATED] Failed to parse appointment time:', e?.message);
-        }
+
+    const bookingMeta = extractCowlendarBookingMeta(order, lineItems);
+    if (bookingMeta.best) {
+      const b = bookingMeta.best;
+      if (b.startDate && !isNaN(b.startDate.getTime())) {
+        appointmentStartTime = b.startDate;
       }
-      
-      // Look for appointment duration
-      const durationProp = properties.find(p => {
-        const name = (p.name || '').toLowerCase();
-        return name === 'duration' || 
-               name === 'appointment_duration' ||
-               name === 'booking_duration';
-      });
-      
-      if (durationProp && durationProp.value) {
-        const parsedDuration = parseInt(durationProp.value, 10);
-        if (!isNaN(parsedDuration) && parsedDuration > 0) {
-          appointmentDuration = parsedDuration;
-          console.log(`⏱️ [ORDER CREATED] Extracted appointment duration: ${appointmentDuration} minutes`);
-        }
+      if (b.durationMin && Number.isFinite(b.durationMin) && b.durationMin > 0) {
+        appointmentDuration = b.durationMin;
       }
+      console.log('🕒 [ORDER CREATED] Booking time extraction (best match)', {
+        orderId: shopifyOrderId,
+        itemTitle: b.itemTitle,
+        startISO: appointmentStartTime.toISOString(),
+        durationMin: appointmentDuration,
+        source: b.startSource,
+        tz: b.tz,
+        usedParts: b.usedParts,
+        durationRaw: b.durationRaw,
+        keysPreview: b.keysPreview,
+      });
+    } else {
+      console.warn('🕒 [ORDER CREATED] Booking time extraction found no candidates; using order.created_at fallback.', {
+        orderId: shopifyOrderId,
+        createdAt: order.created_at || null,
+      });
     }
-    
-    // Also check order note for appointment time (if not found in properties)
-    if (appointmentStartTime.getTime() === (order.created_at ? new Date(order.created_at).getTime() : new Date().getTime())) {
-      const noteMatch = order.note?.match(/(?:appointment|booking|scheduled).*?(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2})/i);
+
+    // As a final fallback, check order note for an ISO-like datetime
+    if (!appointmentStartTime || isNaN(appointmentStartTime.getTime())) {
+      appointmentStartTime = order.created_at ? new Date(order.created_at) : new Date();
+    }
+    if (appointmentStartTime.getTime() === (order.created_at ? new Date(order.created_at).getTime() : appointmentStartTime.getTime())) {
+      const noteMatch = order.note?.match(/(?:appointment|booking|scheduled).*?(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+\-]\d{2}:?\d{2})?)/i);
       if (noteMatch) {
-        try {
-          const parsedTime = new Date(noteMatch[1]);
-          if (!isNaN(parsedTime.getTime())) {
-            appointmentStartTime = parsedTime;
-            console.log(`📅 [ORDER CREATED] Extracted appointment time from order note: ${appointmentStartTime.toISOString()}`);
-          }
-        } catch (e) {
-          // Ignore parsing errors
+        const parsed = parseCowlendarDateTime(noteMatch[1], null);
+        if (parsed && !isNaN(parsed.getTime())) {
+          appointmentStartTime = parsed;
+          console.log(`📅 [ORDER CREATED] Extracted appointment time from order note: ${appointmentStartTime.toISOString()}`);
         }
       }
     }
