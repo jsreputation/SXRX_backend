@@ -15,6 +15,9 @@ lerna-debug.log*
 
 # variable values
 .env
+.env.*
+*.env
+!.env.example
 
 # Runtime data
 pids/
