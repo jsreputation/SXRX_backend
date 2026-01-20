@@ -79,7 +79,7 @@ const corsOptions = {
     return cb(new Error('CORS: origin not allowed'));
   },
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token', 'ngrok-skip-browser-warning'],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 };
 
