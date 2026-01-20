@@ -393,7 +393,8 @@ router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
         endDate: apt.endDate || null,
         status: apt.appointmentStatus || apt.AppointmentStatus || apt.status,
         appointmentType: apt.appointmentType || apt.AppointmentType,
-        meetingLink: apt.meetingLink || apt.MeetingLink || apt.notes?.match(/https?:\/\/[^\s]+/)?.[0] || null
+        // Meeting link is returned only when Tebra provides an explicit meeting link field
+        meetingLink: apt.meetingLink || apt.MeetingLink || null
       }));
     } catch (e) {
       console.warn('[CHART] Failed to fetch appointments:', e?.message || e);
@@ -496,10 +497,8 @@ router.get('/customers/:customerId/appointments', optionalAuth, async (req, res)
         status: apt.appointmentStatus || apt.AppointmentStatus || apt.status || 'Scheduled',
         appointmentType: apt.appointmentType || apt.AppointmentType || 'Consultation',
         notes: apt.notes || apt.Notes || null,
-        meetingLink: apt.meetingLink || apt.MeetingLink || 
-                   (apt.notes && apt.notes.match(/https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*/i)?.[0]) || 
-                   (apt.Notes && apt.Notes.match(/https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*/i)?.[0]) || 
-                   null
+        // Meeting link is returned only when Tebra provides an explicit meeting link field
+        meetingLink: apt.meetingLink || apt.MeetingLink || null
       }));
     } catch (e) {
       console.warn('[APPOINTMENTS] Failed to fetch appointments:', e?.message || e);

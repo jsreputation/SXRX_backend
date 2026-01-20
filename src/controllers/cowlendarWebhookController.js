@@ -7,12 +7,11 @@
 // PRIMARY INTEGRATION: Cowlendar bookings are handled through Shopify Order Created webhook
 // (see billingController.handleShopifyOrderCreated)
 //
-// Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
-// The backend will use Cowlendar-provided links if available, otherwise falls back to
-// backend generation (currently disabled).
+// Meeting links:
+// - Do NOT forward meeting links from Cowlendar to backend/Tebra.
+// - Only surface a "Join" link if Tebra explicitly returns a MeetingLink on the appointment.
 
 const tebraService = require('../services/tebraService');
-const googleMeetService = require('../services/googleMeetService');
 const customerPatientMapService = require('../services/customerPatientMapService');
 const providerMapping = require('../config/providerMapping');
 
@@ -117,30 +116,8 @@ exports.handleAppointmentCreated = async (req, res) => {
     const duration = appointment.duration || 30; // minutes
     const endTime = new Date(startTime.getTime() + duration * 60000);
 
-    // Use meeting link from Cowlendar if available (Cowlendar can generate Google Meet/Zoom links)
-    // Check common field names for meeting links from Cowlendar
-    const cowlendarMeetingLink = 
-      appointment.meeting_link || 
-      appointment.meetingLink || 
-      appointment.video_url || 
-      appointment.videoUrl || 
-      appointment.google_meet_link || 
-      appointment.googleMeetLink ||
-      appointment.zoom_link ||
-      appointment.zoomLink ||
-      null;
-
-    // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
-    let meetingLink = cowlendarMeetingLink;
-    if (!meetingLink) {
-      const meetingDetails = googleMeetService.generateMeetLink({
-        patientName: `${customer.firstName || customer.first_name || ''} ${customer.lastName || customer.last_name || ''}`.trim() || customer.email,
-        doctorName: 'Medical Director',
-        appointmentId: `COWLENDAR-${appointment.id || Date.now()}`,
-        scheduledTime: startTime.toISOString()
-      });
-      meetingLink = meetingDetails ? meetingDetails.meetLink : null;
-    }
+    // Meeting link policy: do NOT forward Cowlendar links.
+    const meetingLink = null;
 
     const appointmentData = {
       appointmentName: appointment.service_name || appointment.serviceName || 'Telemedicine Consultation',
@@ -151,17 +128,30 @@ exports.handleAppointmentCreated = async (req, res) => {
       patientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId || appointment.providerId,
-      notes: meetingLink ? `Cowlendar appointment. Meeting link: ${meetingLink}` : 'Cowlendar appointment.',
+      // Keep notes link-free. This is an audit trail only.
+      notes: 'Cowlendar appointment.',
       isRecurring: false
     };
 
     const tebraAppointment = await tebraService.createAppointment(appointmentData);
-    console.log(`✅ [COWLENDAR] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
+    const createdId = tebraAppointment?.id || tebraAppointment?.ID || tebraAppointment?.appointmentId || tebraAppointment?.AppointmentID || null;
+    console.log(`✅ [COWLENDAR] Created appointment in Tebra: ${createdId || '(unknown id)'}`);
+
+    // Verify whether Tebra provides an explicit meeting link on the created appointment.
+    if (createdId) {
+      try {
+        const fetched = await tebraService.getAppointment(createdId);
+        const tebraMeetingLink = fetched?.meetingLink || fetched?.MeetingLink || null;
+        console.log(`🔍 [COWLENDAR] Tebra appointment meeting link ${tebraMeetingLink ? 'present' : 'not present'}`);
+      } catch (e) {
+        console.warn('[COWLENDAR] Failed to fetch appointment after create for meeting link verification:', e?.message || e);
+      }
+    }
 
     res.json({
       success: true,
-      tebraAppointmentId: tebraAppointment.id || tebraAppointment.ID,
-      meetingLink: meetingLink,
+      tebraAppointmentId: createdId,
+      meetingLink: null,
       patientId,
       message: 'Appointment synced to Tebra successfully'
     });

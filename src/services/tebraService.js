@@ -3246,14 +3246,11 @@ ${appointmentXml}
         caseName: appointment.PatientCaseName || appointment.patientCaseName,
         casePayerScenario: appointment.PatientCasePayerScenario || appointment.patientCasePayerScenario
       },
-      // Extract meeting link from notes (explicit field wins, then first URL in notes)
+      // Meeting link (explicit field only; do not parse Notes for URLs)
       meetingLink: (() => {
         try {
-          if (appointment.meetingLink || appointment.MeetingLink) return appointment.meetingLink || appointment.MeetingLink;
-          const notesStr = String(appointment.Notes || appointment.Note || appointment.notes || appointment.note || '');
-          const m = notesStr.match(/https?:\/\/[^\s)]+/);
-          return m && m[0] ? m[0].replace(/[).,;]*$/, '') : null;
-        } catch (e) { return appointment.meetingLink || appointment.MeetingLink || null; }
+          return appointment.meetingLink || appointment.MeetingLink || null;
+        } catch (e) { return null; }
       })(),
       // Practice information
       practice: {

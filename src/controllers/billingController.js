@@ -29,6 +29,69 @@ async function extractCustomerIdFromOrder(body) {
   );
 }
 
+function safeTrim(value) {
+  const s = (value ?? '').toString().trim();
+  return s.length ? s : null;
+}
+
+function parseFullName(fullName) {
+  const s = safeTrim(fullName);
+  if (!s) return { firstName: null, lastName: null };
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (!parts.length) return { firstName: null, lastName: null };
+  if (parts.length === 1) return { firstName: parts[0], lastName: null };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+}
+
+function extractContactFromLineItemProperties(lineItems) {
+  const out = { firstName: null, lastName: null, email: null, fullName: null, matchedKeys: [] };
+  const items = Array.isArray(lineItems) ? lineItems : [];
+
+  for (const item of items) {
+    const props = Array.isArray(item?.properties) ? item.properties : [];
+    for (const prop of props) {
+      const rawKey = prop?.name ?? '';
+      const key = rawKey.toString().toLowerCase().trim();
+      const val = safeTrim(prop?.value);
+      if (!key || !val) continue;
+
+      const recordMatch = (field) => out.matchedKeys.push(`${field}:${rawKey}`);
+
+      if (!out.email && key.includes('email') && val.includes('@')) {
+        out.email = val;
+        recordMatch('email');
+        continue;
+      }
+
+      if (!out.firstName && (key === 'first_name' || key === 'firstname' || key.includes('first name') || key.includes('given name'))) {
+        out.firstName = val;
+        recordMatch('firstName');
+        continue;
+      }
+
+      if (!out.lastName && (key === 'last_name' || key === 'lastname' || key.includes('last name') || key.includes('family name') || key.includes('surname'))) {
+        out.lastName = val;
+        recordMatch('lastName');
+        continue;
+      }
+
+      if (!out.fullName && (key === 'full_name' || key.includes('full name') || key === 'name' || key.endsWith('_name'))) {
+        out.fullName = val;
+        recordMatch('fullName');
+      }
+    }
+  }
+
+  // If only full name provided, split it.
+  if ((!out.firstName || !out.lastName) && out.fullName) {
+    const parsed = parseFullName(out.fullName);
+    out.firstName = out.firstName || parsed.firstName;
+    out.lastName = out.lastName || parsed.lastName;
+  }
+
+  return out;
+}
+
 // Check if product requires subscription (via tags or metafields)
 function isSubscriptionProduct(product) {
   const tags = (product.tags || '').toLowerCase();
@@ -590,8 +653,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     console.log(`   🎯 Detection method(s): ${detectionMethods.join(', ') || 'unknown'}`);
 
     // Determine state from shipping/billing address
-    const shippingAddress = order.shipping_address || order.billing_address;
-    const billingAddress = order.billing_address;
+    const shippingAddress = order.shipping_address || null;
+    const billingAddress = order.billing_address || null;
     const detectedState = shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state || 
                          billingAddress?.province_code || billingAddress?.province || billingAddress?.state || 
                          'CA';
@@ -635,19 +698,53 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     }
 
     // Create patient if not found
-    if (!tebraPatientId && email) {
+    // Resolve best-available contact fields for guest + customer orders
+    const contactFromProps = extractContactFromLineItemProperties(lineItems);
+    const resolvedEmail = email || contactFromProps.email || null;
+    const resolvedFirstName =
+      safeTrim(shippingAddress?.first_name) ||
+      safeTrim(billingAddress?.first_name) ||
+      safeTrim(order.customer?.first_name) ||
+      safeTrim(contactFromProps.firstName) ||
+      parseFullName(order.customer?.name).firstName ||
+      'Unknown';
+    const resolvedLastName =
+      safeTrim(shippingAddress?.last_name) ||
+      safeTrim(billingAddress?.last_name) ||
+      safeTrim(order.customer?.last_name) ||
+      safeTrim(contactFromProps.lastName) ||
+      parseFullName(order.customer?.name).lastName ||
+      'Unknown';
+    const resolvedPhone =
+      safeTrim(shippingAddress?.phone) ||
+      safeTrim(billingAddress?.phone) ||
+      safeTrim(order.customer?.phone) ||
+      null;
+
+    console.log('👤 [ORDER CREATED] Resolved contact', {
+      email: resolvedEmail,
+      firstName: resolvedFirstName,
+      lastName: resolvedLastName,
+      hasShipping: !!shippingAddress,
+      hasBilling: !!billingAddress,
+      hasCustomerObj: !!order.customer,
+      lineItemPropertyMatches: contactFromProps.matchedKeys
+    });
+
+    if (!tebraPatientId && resolvedEmail) {
       try {
+        const addressForPatient = shippingAddress || billingAddress || null;
         const patientPayload = {
-          firstName: shippingAddress?.first_name || order.customer?.first_name || 'Unknown',
-          lastName: shippingAddress?.last_name || order.customer?.last_name || 'Unknown',
-          email: email,
-          mobilePhone: shippingAddress?.phone || order.customer?.phone || null,
-          addressLine1: shippingAddress?.address1 || null,
-          addressLine2: shippingAddress?.address2 || null,
-          city: shippingAddress?.city || null,
+          firstName: resolvedFirstName,
+          lastName: resolvedLastName,
+          email: resolvedEmail,
+          mobilePhone: resolvedPhone,
+          addressLine1: addressForPatient?.address1 || null,
+          addressLine2: addressForPatient?.address2 || null,
+          city: addressForPatient?.city || null,
           state: state,
-          zipCode: shippingAddress?.zip || null,
-          country: shippingAddress?.country || 'USA',
+          zipCode: addressForPatient?.zip || null,
+          country: addressForPatient?.country || 'USA',
           practice: {
             PracticeID: mapping.practiceId,
             PracticeName: mapping.practiceName,
@@ -658,11 +755,11 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         tebraPatientId = created.id || created.PatientID || created.patientId;
         
         // Store mapping
-        if (shopifyCustomerId || email) {
-          await customerPatientMapService.upsert(shopifyCustomerId, email, tebraPatientId);
+        if (shopifyCustomerId || resolvedEmail) {
+          await customerPatientMapService.upsert(shopifyCustomerId, resolvedEmail, tebraPatientId);
         }
         
-        console.log(`✅ [STEP 4] [ORDER CREATED] Created new patient in Tebra: Patient ID ${tebraPatientId}, Email: ${email}, Practice ID: ${mapping.practiceId}`);
+        console.log(`✅ [STEP 4] [ORDER CREATED] Created new patient in Tebra: Patient ID ${tebraPatientId}, Email: ${resolvedEmail}, Practice ID: ${mapping.practiceId}`);
       } catch (e) {
         console.error('[ORDER CREATED] Failed to create patient:', e?.message || e);
         // Continue - we'll try to create appointment anyway
@@ -676,6 +773,15 @@ exports.handleShopifyOrderCreated = async (req, res) => {
         skipped: true, 
         reason: 'no_patient_id' 
       });
+    }
+
+    // Always upsert mapping when we have a patient id (keeps email/customerId linkage fresh)
+    try {
+      if (shopifyCustomerId || resolvedEmail) {
+        await customerPatientMapService.upsert(shopifyCustomerId, resolvedEmail, tebraPatientId);
+      }
+    } catch (e) {
+      console.warn('[ORDER CREATED] Failed to upsert customer-patient mapping:', e?.message || e);
     }
 
     console.log(`📋 [STEP 5] [ORDER CREATED] Starting appointment extraction for order ${shopifyOrderId}, Patient ID: ${tebraPatientId}`);
@@ -748,57 +854,9 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       }
     }
 
-    // Check for meeting link from Cowlendar in order properties or notes
-    // Cowlendar may include meeting links in order line item properties or order notes
-    let cowlendarMeetingLink = null;
-    
-    // Check line item properties for meeting link
-    if (lineItems && lineItems.length > 0) {
-      for (const item of lineItems) {
-        if (item.properties) {
-          for (const prop of item.properties) {
-            const propName = (prop.name || '').toLowerCase();
-            const propValue = prop.value || '';
-            if ((propName.includes('meeting') || propName.includes('video') || propName.includes('link') || propName.includes('meet') || propName.includes('zoom')) && 
-                (propValue.includes('http') || propValue.includes('meet.google.com') || propValue.includes('zoom.us'))) {
-              cowlendarMeetingLink = propValue;
-              console.log(`🔗 [STEP 6] [ORDER CREATED] Found Cowlendar meeting link in order properties: ${cowlendarMeetingLink}`);
-              break;
-            }
-          }
-        }
-        if (cowlendarMeetingLink) break;
-      }
-    }
-    
-    // Check order note for meeting link
-    if (!cowlendarMeetingLink && order.note) {
-      const noteMatch = order.note.match(/(https?:\/\/[^\s]+(?:meet\.google\.com|zoom\.us)[^\s]*)/i);
-      if (noteMatch) {
-        cowlendarMeetingLink = noteMatch[1];
-        console.log(`🔗 [STEP 6] [ORDER CREATED] Found Cowlendar meeting link in order note: ${cowlendarMeetingLink}`);
-      }
-    }
-
-    // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
-    let meetingLink = cowlendarMeetingLink;
-    if (!meetingLink) {
-      const googleMeetService = require('../services/googleMeetService');
-      const meetingDetails = googleMeetService.generateMeetLink({
-        patientName: `${shippingAddress?.first_name || order.customer?.first_name || ''} ${shippingAddress?.last_name || order.customer?.last_name || ''}`.trim() || email,
-        doctorName: 'Medical Director',
-        appointmentId: `COWLENDAR-ORDER-${shopifyOrderId}`,
-        scheduledTime: appointmentStartTime.toISOString()
-      });
-      meetingLink = meetingDetails ? meetingDetails.meetLink : null;
-      if (meetingLink) {
-        console.log(`🔗 [STEP 6] [ORDER CREATED] Generated backend meeting link: ${meetingLink}`);
-      } else {
-        console.log(`⚠️ [STEP 6] [ORDER CREATED] No meeting link available (Cowlendar didn't provide one and backend generation returned null)`);
-      }
-    } else if (cowlendarMeetingLink) {
-      console.log(`🔗 [STEP 6] [ORDER CREATED] Using Cowlendar-provided meeting link: ${cowlendarMeetingLink}`);
-    }
+    // Meeting link policy: do NOT forward Cowlendar links from Shopify → backend → Tebra.
+    // We only surface a "Join" link if Tebra explicitly returns one on the appointment.
+    const meetingLink = null;
 
     // Create appointment in Tebra
     const appointmentEndTime = new Date(appointmentStartTime.getTime() + appointmentDuration * 60000);
@@ -812,7 +870,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       practiceId: mapping.practiceId,
       // Only include providerId if explicitly set - Tebra will use practice default if omitted
       ...(mapping.defaultProviderId && { providerId: mapping.defaultProviderId }),
-      notes: meetingLink ? `Cowlendar booking from order ${shopifyOrderId}. Meeting link: ${meetingLink}` : `Cowlendar booking from order ${shopifyOrderId}.`,
+      // Keep notes link-free. This is an audit trail only.
+      notes: `Cowlendar booking from order ${shopifyOrderId}.`,
       isRecurring: false
     };
 
@@ -866,14 +925,27 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     } else {
       console.warn(`⚠️ [STEP 5] [ORDER CREATED] Appointment creation completed but no Appointment ID returned`);
     }
+
+    // Verify whether Tebra provides an explicit meeting link on the created appointment.
+    // (We do not store/forward Cowlendar links; only use this if Tebra returns MeetingLink.)
+    let tebraMeetingLink = null;
+    if (tebraAppointmentId) {
+      try {
+        const fetched = await tebraService.getAppointment(tebraAppointmentId);
+        tebraMeetingLink = fetched?.meetingLink || fetched?.MeetingLink || null;
+        console.log(`🔍 [ORDER CREATED] Tebra appointment meeting link ${tebraMeetingLink ? 'present' : 'not present'}`);
+      } catch (e) {
+        console.warn('[ORDER CREATED] Failed to fetch appointment after create for meeting link verification:', e?.message || e);
+      }
+    }
     
-    console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId || 'N/A'}, Patient ID: ${tebraPatientId}, Meeting Link: ${meetingLink || 'None'}`);
+    console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId || 'N/A'}, Patient ID: ${tebraPatientId}, Tebra Meeting Link: ${tebraMeetingLink || 'None'}`);
     console.log(`📧 [STEP 7] [ORDER CREATED] Sending success response to Shopify webhook - Customer will receive confirmation from Cowlendar`);
 
     res.json({
       success: true,
       tebraAppointmentId: tebraAppointmentId || null,
-      meetingLink: meetingLink,
+      meetingLink: null,
       patientId: tebraPatientId,
       message: tebraAppointmentId ? 'Cowlendar booking synced to Tebra successfully' : 'Cowlendar booking processed but appointment ID not available'
     });
