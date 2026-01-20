@@ -4089,46 +4089,24 @@ ${appointmentXml}
 const tebraServiceInstance = new TebraService();
 
 // Minimal document APIs to support listing and downloading patient documents
-// These use the generic callMethod; response parsing tolerates multiple shapes.
+// NOTE: KareoServices SOAP 2.1 does NOT expose document-listing or document-download operations
+// (WSDL includes CreateDocument/DeleteDocument only). These endpoints therefore return empty results.
 tebraServiceInstance.getDocuments = async function({ patientId }) {
   if (!patientId) throw new Error('patientId is required');
-  try {
-    // Attempt using a generic SOAP call with Filter.PatientId
-    const resp = await this.callMethod('GetDocuments', {}, { PatientId: String(patientId) });
-    // Normalize a few common shapes
-    const list = resp?.GetDocumentsResult?.Documents || resp?.documents || resp?.Documents || [];
-    const documents = Array.isArray(list) ? list.map((d) => ({
-      id: d.Id || d.id,
-      name: d.Name || d.name,
-      fileName: d.FileName || d.fileName || null,
-      documentDate: d.DocumentDate || d.documentDate || null,
-      status: d.Status || d.status || 'Active',
-      patientId: d.PatientId || d.patientId || patientId,
-      practiceId: d.PracticeId || d.practiceId || null,
-      createdAt: d.CreatedAt || d.createdAt || null,
-    })) : [];
-    return { documents };
-  } catch (err) {
-    console.warn('getDocuments failed (returning empty list):', err?.message || err);
-    return { documents: [] };
+  if (!this._warnedDocumentsUnsupported) {
+    this._warnedDocumentsUnsupported = true;
+    console.warn('[TEBRA] getDocuments is not supported by KareoServices SOAP 2.1; returning empty list.');
   }
+  return { documents: [] };
 };
 
 tebraServiceInstance.getDocumentContent = async function(documentId) {
   if (!documentId) throw new Error('documentId is required');
-  try {
-    // Some APIs expect the id in Fields, others in Filter; try Fields first.
-    const resp = await this.callMethod('GetDocumentContent', { DocumentId: String(documentId) }, {});
-    const item = resp?.GetDocumentContentResult || resp?.Document || resp || {};
-    return {
-      fileName: item.FileName || item.fileName || `document-${documentId}.pdf`,
-      mimeType: item.MimeType || item.mimeType || 'application/pdf',
-      base64Content: item.Content || item.Base64Data || item.base64Content || null,
-    };
-  } catch (err) {
-    console.warn('getDocumentContent failed:', err?.message || err);
-    return { fileName: `document-${documentId}.pdf`, mimeType: 'application/pdf', base64Content: null };
+  if (!this._warnedDocumentsUnsupported) {
+    this._warnedDocumentsUnsupported = true;
+    console.warn('[TEBRA] getDocumentContent is not supported by KareoServices SOAP 2.1; returning null content.');
   }
+  return { fileName: `document-${documentId}.pdf`, mimeType: 'application/pdf', base64Content: null };
 };
 
 // Export both the instance (default) and the class

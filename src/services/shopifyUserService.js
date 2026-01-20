@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 
 // Shopify configuration
 const SHOPIFY_CONFIG = {
-  shopDomain: process.env.SHOPIFY_STORE,
+  shopDomain: process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN,
   accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
   apiVersion: '2024-01'
 };
@@ -13,7 +13,7 @@ const SHOPIFY_CONFIG = {
 // Helper function to make authenticated Shopify API calls
 async function makeShopifyRequest(endpoint, method = 'GET', data = null) {
   try {
-    const url = `https://${SHOPIFY_CONFIG.shopDomain}/api/${SHOPIFY_CONFIG.apiVersion}/${endpoint}`;
+    const url = `https://${SHOPIFY_CONFIG.shopDomain}/admin/api/${SHOPIFY_CONFIG.apiVersion}/${endpoint}`;
     const config = {
       method,
       url,
@@ -36,10 +36,22 @@ async function makeShopifyRequest(endpoint, method = 'GET', data = null) {
 }
 
 class ShopifyUserService {
+  // Get customer by id (Admin API)
+  async getCustomer(customerId) {
+    try {
+      const resp = await makeShopifyRequest(`customers/${customerId}.json`);
+      return resp?.customer || null;
+    } catch (error) {
+      console.error('Error getting customer:', error);
+      return null;
+    }
+  }
+
   // Find customer by email
   async findCustomerByEmail(email) {
     try {
-      const response = await makeShopifyRequest(`customers/search.json?query=email:${email}`);
+      const q = encodeURIComponent(`email:${email}`);
+      const response = await makeShopifyRequest(`customers/search.json?query=${q}`);
       return response.customers && response.customers.length > 0 ? response.customers[0] : null;
     } catch (error) {
       console.error('Error finding customer:', error);
