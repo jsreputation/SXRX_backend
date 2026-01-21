@@ -79,31 +79,40 @@ async function processMonthlyBilling() {
           }
         }
         
-        // Create billing document in Tebra
-        try {
-          const payload = {
-            subscriptionId: subscription.id,
-            shopifyCustomerId: shopify_customer_id,
-            shopifyProductId: subscription.shopify_product_id,
-            amount: amount_cents / 100,
-            currency: currency || 'USD',
-            frequency,
-            tebraChargeId,
-            tebraPaymentId,
-            dateOfService,
-            type: 'subscription_renewal',
-          };
-          await tebraService.createDocument({
-            name: 'Billing - Subscription Renewal',
-            fileName: `subscription-${subscription.id}-${dateOfService}.json`,
-            label: 'Billing',
-            patientId: tebra_patient_id,
-            fileContent: Buffer.from(JSON.stringify(payload)).toString('base64'),
-            status: 'Completed',
-          });
-          console.log(`✅ [MONTHLY BILLING] Created billing document for subscription ${subscription.id}`);
-        } catch (e) {
-          console.warn(`⚠️ [MONTHLY BILLING] Failed to create billing document for subscription ${subscription.id}:`, e?.message || e);
+        // Create billing document in Tebra (optional backup).
+        // If charge+payment were successfully created, this can be skipped to reduce SOAP CreateDocument faults.
+        const alwaysCreateBillingDoc = String(process.env.TEBRA_ALWAYS_CREATE_BILLING_DOCUMENTS || 'false').toLowerCase() === 'true';
+        const shouldCreateBillingDoc = alwaysCreateBillingDoc || !tebraChargeId || !tebraPaymentId;
+        if (shouldCreateBillingDoc) {
+          try {
+            const payload = {
+              subscriptionId: subscription.id,
+              shopifyCustomerId: shopify_customer_id,
+              shopifyProductId: subscription.shopify_product_id,
+              amount: amount_cents / 100,
+              currency: currency || 'USD',
+              frequency,
+              tebraChargeId,
+              tebraPaymentId,
+              dateOfService,
+              type: 'subscription_renewal',
+            };
+            await tebraService.createDocument({
+              name: 'Billing - Subscription Renewal',
+              fileName: `subscription-${subscription.id}-${dateOfService}.json`,
+              label: 'Billing',
+              patientId: tebra_patient_id,
+              practiceId,
+              documentDate: dateOfService,
+              fileContent: Buffer.from(JSON.stringify(payload)).toString('base64'),
+              status: 'Completed',
+            });
+            console.log(`✅ [MONTHLY BILLING] Created billing document for subscription ${subscription.id}`);
+          } catch (e) {
+            console.warn(`⚠️ [MONTHLY BILLING] Failed to create billing document for subscription ${subscription.id}:`, e?.message || e);
+          }
+        } else {
+          console.log(`ℹ️ [MONTHLY BILLING] Skipping billing document (charge+payment created) for subscription ${subscription.id}`);
         }
         
         // Update subscription next billing date

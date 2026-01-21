@@ -575,36 +575,46 @@ exports.handleShopifyOrderPaid = async (req, res) => {
       }
     }
 
-    // Create billing document in Tebra for reconciliation (always create as backup)
-    try {
-      const payload = {
-        shopifyOrderId,
-        shopifyCustomerId,
-        total: order.total_price || order.current_total_price || order.total_price_set?.shop_money?.amount,
-        currency: order.currency || 'USD',
-        lineItems: lineItems.map(li => ({
-          title: li.title,
-          sku: li.sku,
-          productId: li.product_id,
-          variantId: li.variant_id,
-          price: li.price,
-          quantity: li.quantity,
-        })),
-        tebraChargeId,
-        tebraPaymentId,
-        dateOfService,
-      };
-      await tebraService.createDocument({
-        name: 'Billing - Shopify Order',
-        fileName: `billing-${shopifyOrderId}.json`,
-        label: 'Billing',
-        patientId: tebraPatientId,
-        fileContent: Buffer.from(JSON.stringify(payload)).toString('base64'),
-        status: 'Completed',
-      });
-      console.log(`✅ [BILLING] Created billing document for order ${shopifyOrderId}`);
-    } catch (e) {
-      console.warn('⚠️ [BILLING] Failed to create billing document in Tebra:', e?.message || e);
+    // Create billing document in Tebra for reconciliation.
+    // If charge+payment were successfully created, this is optional and can be skipped to avoid
+    // repeated SOAP CreateDocument faults in some Kareo accounts.
+    const alwaysCreateBillingDoc = String(process.env.TEBRA_ALWAYS_CREATE_BILLING_DOCUMENTS || 'false').toLowerCase() === 'true';
+    const shouldCreateBillingDoc = alwaysCreateBillingDoc || !tebraChargeId || !tebraPaymentId;
+    if (shouldCreateBillingDoc) {
+      try {
+        const payload = {
+          shopifyOrderId,
+          shopifyCustomerId,
+          total: order.total_price || order.current_total_price || order.total_price_set?.shop_money?.amount,
+          currency: order.currency || 'USD',
+          lineItems: lineItems.map(li => ({
+            title: li.title,
+            sku: li.sku,
+            productId: li.product_id,
+            variantId: li.variant_id,
+            price: li.price,
+            quantity: li.quantity,
+          })),
+          tebraChargeId,
+          tebraPaymentId,
+          dateOfService,
+        };
+        await tebraService.createDocument({
+          name: 'Billing - Shopify Order',
+          fileName: `billing-${shopifyOrderId}.json`,
+          label: 'Billing',
+          patientId: tebraPatientId,
+          practiceId,
+          documentDate: dateOfService,
+          fileContent: Buffer.from(JSON.stringify(payload)).toString('base64'),
+          status: 'Completed',
+        });
+        console.log(`✅ [BILLING] Created billing document for order ${shopifyOrderId}`);
+      } catch (e) {
+        console.warn('⚠️ [BILLING] Failed to create billing document in Tebra:', e?.message || e);
+      }
+    } else {
+      console.log(`ℹ️ [BILLING] Skipping billing document (charge+payment created) for order ${shopifyOrderId}`);
     }
 
     // Handle subscriptions - create subscription records for monthly products
