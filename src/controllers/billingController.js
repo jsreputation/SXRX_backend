@@ -377,6 +377,39 @@ async function validateOrderBeforeProcessing(order) {
   const shippingAddress = order.shipping_address || order.billing_address;
   const state = shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state;
   const customerId = order.customer?.id;
+
+  const normalizeBool = (value) => {
+    if (value === true) return true;
+    if (value === false) return false;
+    const v = String(value ?? '').trim().toLowerCase();
+    if (!v) return false;
+    return v === 'true' || v === '1' || v === 'yes' || v === 'y';
+  };
+
+  const getPropValue = (props, keyCandidates) => {
+    if (!props) return null;
+    const candidates = Array.isArray(keyCandidates) ? keyCandidates : [keyCandidates];
+
+    // Shopify order line item properties are typically: [{ name, value }, ...]
+    if (Array.isArray(props)) {
+      for (const k of candidates) {
+        const match = props.find(p => String(p?.name || '').toLowerCase() === String(k).toLowerCase());
+        if (match && match.value !== undefined) return match.value;
+      }
+      return null;
+    }
+
+    // Some callers may provide properties as an object map
+    if (typeof props === 'object') {
+      for (const k of candidates) {
+        if (Object.prototype.hasOwnProperty.call(props, k)) return props[k];
+        // Also try case-insensitive lookup
+        const foundKey = Object.keys(props).find(pk => pk.toLowerCase() === String(k).toLowerCase());
+        if (foundKey) return props[foundKey];
+      }
+    }
+    return null;
+  };
   
   // Fetch customer metafields for questionnaire status
   let customerMetafields = {};
@@ -391,6 +424,13 @@ async function validateOrderBeforeProcessing(order) {
   const questionnaireStatus = customerMetafields?.questionnaire_status?.value || 
                               customerMetafields?.questionnaire_status ||
                               customerMetafields?.questionnaireStatus;
+
+  // Guests don't have customer metafields; accept proof written by the storefront flow
+  // (`questionnaire-integration.js` sets `_questionnaire_completed: 'true'` on line-item properties).
+  const orderHasQuestionnaireProof = lineItems.some((item) => {
+    const v = getPropValue(item?.properties, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']);
+    return normalizeBool(v);
+  });
   
   // Validate each line item
   for (const item of lineItems) {
@@ -433,7 +473,8 @@ async function validateOrderBeforeProcessing(order) {
     
     // Check questionnaire requirement
     if (productUtils.requiresQuestionnaire(product)) {
-      if (questionnaireStatus !== 'completed') {
+      const itemHasProof = normalizeBool(getPropValue(item?.properties, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']));
+      if (questionnaireStatus !== 'completed' && !orderHasQuestionnaireProof && !itemHasProof) {
         throw new Error(`Questionnaire required for ${product.title || item.title}`);
       }
     }

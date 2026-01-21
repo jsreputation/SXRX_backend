@@ -73,6 +73,45 @@ router.post('/checkout/validate', auth, async (req, res) => {
     const questionnaireStatus = customerMetafields?.questionnaire_status?.value || 
                                 customerMetafields?.questionnaire_status ||
                                 customerMetafields?.questionnaireStatus;
+
+    const normalizeBool = (value) => {
+      if (value === true) return true;
+      if (value === false) return false;
+      const v = String(value ?? '').trim().toLowerCase();
+      if (!v) return false;
+      return v === 'true' || v === '1' || v === 'yes' || v === 'y';
+    };
+
+    const getPropValue = (props, keyCandidates) => {
+      if (!props) return null;
+      const candidates = Array.isArray(keyCandidates) ? keyCandidates : [keyCandidates];
+
+      // Common shapes:
+      // - Shopify order webhooks: [{ name, value }, ...]
+      // - Cart/ajax contexts: { key: value, ... }
+      if (Array.isArray(props)) {
+        for (const k of candidates) {
+          const match = props.find(p => String(p?.name || '').toLowerCase() === String(k).toLowerCase());
+          if (match && match.value !== undefined) return match.value;
+        }
+        return null;
+      }
+
+      if (typeof props === 'object') {
+        for (const k of candidates) {
+          if (Object.prototype.hasOwnProperty.call(props, k)) return props[k];
+          const foundKey = Object.keys(props).find(pk => pk.toLowerCase() === String(k).toLowerCase());
+          if (foundKey) return props[foundKey];
+        }
+      }
+      return null;
+    };
+
+    const requestHasQuestionnaireProof = (lineItems || []).some((item) => {
+      const props = item?.properties || item?.line_item_properties || null;
+      const v = getPropValue(props, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']);
+      return normalizeBool(v);
+    });
     
     // Validate each line item
     for (const item of lineItems) {
@@ -122,7 +161,9 @@ router.post('/checkout/validate', auth, async (req, res) => {
       
       // Check if questionnaire required
       if (productUtils.requiresQuestionnaire(product)) {
-        if (questionnaireStatus !== 'completed') {
+        const props = item?.properties || item?.line_item_properties || null;
+        const itemHasProof = normalizeBool(getPropValue(props, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']));
+        if (questionnaireStatus !== 'completed' && !requestHasQuestionnaireProof && !itemHasProof) {
           return res.status(400).json({
             error: 'QUESTIONNAIRE_REQUIRED',
             message: 'Please complete the medical questionnaire before purchasing this product',

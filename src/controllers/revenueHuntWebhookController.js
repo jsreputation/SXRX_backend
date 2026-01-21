@@ -5,6 +5,7 @@ const notificationService = require('../services/notificationService');
 const pharmacyService = require('../services/pharmacyService');
 const qualiphyService = require('../services/qualiphyService');
 const customerPatientMapService = require('../services/customerPatientMapService');
+const shopifyUserService = require('../services/shopifyUserService');
 
 // Helpers
 function determineState(payload) {
@@ -336,6 +337,27 @@ exports.handleRevenueHunt = async (req, res) => {
 
     // 6) Branch by red flags
     const red = hasRedFlags(payload);
+
+    // Keep Shopify customer metafields in sync (signed-in flow).
+    // The storefront posts to /webhooks/revenue-hunt (not /api/tebra-questionnaire/submit),
+    // so without this, paid-order processing may fail validation because questionnaire_status is missing.
+    if (customerId) {
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const metafields = {
+          questionnaire_status: red ? 'requires_consultation' : 'completed',
+          tebra_patient_id: String(patientId),
+          last_questionnaire_date: today,
+        };
+        if (state) {
+          metafields.state = state;
+        }
+        await shopifyUserService.updateCustomerMetafields(customerId, metafields);
+        console.log(`✅ [REVENUEHUNT] Updated Shopify customer metafields for customer ${customerId}`);
+      } catch (e) {
+        console.warn('⚠️ [REVENUEHUNT] Failed to update Shopify customer metafields (non-critical):', e?.message || e);
+      }
+    }
     
     if (!red) {
       // No red flags: create prescription and allow purchase
