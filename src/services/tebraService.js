@@ -1715,7 +1715,40 @@ ${appointmentXml}
       console.log("GetPatient result:", result);
       return this.normalizeGetPatientResponse(result);
     } catch (error) {
-      console.error('Tebra SOAP: GetPatient error', error.message);
+      // Parse SOAP fault if available
+      let faultMsg = null;
+      let isInternalFault = false;
+      try {
+        const xml = error?.response?.data || error?.data || error?.message || '';
+        if (typeof xml === 'string') {
+          if (/InternalServiceFault/i.test(xml)) {
+            isInternalFault = true;
+            faultMsg = 'InternalServiceFault';
+          } else if (/Fault/i.test(xml)) {
+            const faultStringMatch = xml.match(/<faultstring[^>]*>([\s\S]*?)<\/faultstring>/i);
+            faultMsg = faultStringMatch && faultStringMatch[1] ? faultStringMatch[1].trim() : null;
+            if (/InternalServiceFault/i.test(faultMsg || '')) {
+              isInternalFault = true;
+              faultMsg = 'InternalServiceFault';
+            }
+          }
+        }
+        // Also check error.message directly
+        if (!faultMsg && /InternalServiceFault/i.test(error?.message || '')) {
+          isInternalFault = true;
+          faultMsg = 'InternalServiceFault';
+        }
+      } catch (_) {}
+      
+      // InternalServiceFault is a Tebra server-side issue, not our code issue.
+      // Log as warning to reduce noise, but still throw so callers can handle gracefully.
+      if (isInternalFault) {
+        console.warn('⚠️ [TEBRA] GetPatient InternalServiceFault (Tebra server-side error) for patientId:', patientId, '|', faultMsg || error.message);
+        console.warn('   This is typically a temporary Tebra server issue. Chart endpoint will continue with other data.');
+      } else {
+        console.error('Tebra SOAP: GetPatient error', error.message, faultMsg ? `| Fault: ${faultMsg}` : '');
+      }
+      
       throw error;
     }
   }
