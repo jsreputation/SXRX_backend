@@ -26,4 +26,20 @@ async function sendProviderAlert({ to, subject, text, html }) {
   }
 }
 
-module.exports = { sendProviderAlert };
+async function sendEmail({ to, subject, text, html }) {
+  init();
+  if (!to) {
+    console.warn('sendEmail: no recipient provided');
+    return { success: false, error: 'No recipient' };
+  }
+  try {
+    const from = process.env.SENDGRID_FROM || 'no-reply@sxrx.local';
+    await sgMail.send({ to, from, subject, text: text || (html ? undefined : 'Email'), html });
+    return { success: true };
+  } catch (e) {
+    console.warn('sendEmail failed:', e?.message || e);
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+module.exports = { sendProviderAlert, sendEmail };

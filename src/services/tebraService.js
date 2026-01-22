@@ -103,13 +103,13 @@ class TebraService {
       return this.generateGetAppointmentSOAPXML(fields);
     }
     
-    // Build fields XML - match the working template exactly
+    // Build fields XML - match the working template exactly (with XML escaping)
     const fieldsXml = Object.keys(fields).length > 0 ? 
       Object.keys(fields).map(key => 
-        `          <sch:${key}>${fields[key]}</sch:${key}>`
+        `          <sch:${key}>${this.xmlEscape(String(fields[key]))}</sch:${key}>`
       ).join('\n') : '';
     
-    // Build filters XML - match the working template exactly
+    // Build filters XML - match the working template exactly (with XML escaping)
     // Filter out undefined/null values to prevent API errors
     const validFilters = Object.keys(filters).length > 0 ?
       Object.keys(filters).filter(key => 
@@ -118,7 +118,7 @@ class TebraService {
     
     const filtersXml = validFilters.length > 0 ?
       validFilters.map(key =>
-        `          <sch:${key}>${filters[key]}</sch:${key}>`
+        `          <sch:${key}>${this.xmlEscape(String(filters[key]))}</sch:${key}>`
       ).join('\n') : '';
     
     // Return raw SOAP XML string exactly like the working client
@@ -129,9 +129,9 @@ class TebraService {
     <sch:${methodName}>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
         <sch:Fields>
 ${fieldsXml}
@@ -161,13 +161,8 @@ ${filtersXml}
           xml += buildPatientXml(value, indent + '   ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          // Handle simple values - escape XML special characters
-          const escapedValue = String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+          // Handle simple values - escape XML special characters using helper method
+          const escapedValue = this.xmlEscape(String(value));
           xml += `${indent}<sch:${key}>${escapedValue}</sch:${key}>\n`;
         }
       }
@@ -183,9 +178,9 @@ ${filtersXml}
     <sch:CreatePatient>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
         <sch:Patient>
 ${patientXml}        </sch:Patient>
@@ -432,9 +427,9 @@ ${patientXml}        </sch:Patient>
     <sch:CreateAppointment>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
         <sch:Appointment>
 ${appointmentXml}        </sch:Appointment>
@@ -459,13 +454,8 @@ ${appointmentXml}        </sch:Appointment>
           xml += buildAppointmentXml(value, indent + '   ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          // Handle simple values - escape XML special characters
-          const escapedValue = String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&apos;');
+          // Handle simple values - escape XML special characters using helper method
+          const escapedValue = this.xmlEscape(String(value));
           xml += `${indent}<sch:${key}>${escapedValue}</sch:${key}>\n`;
         }
       }
@@ -481,9 +471,9 @@ ${appointmentXml}        </sch:Appointment>
     <sch:GetAppointment>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
 ${appointmentXml}
       </sch:request>
@@ -508,13 +498,8 @@ ${appointmentXml}
           xml += buildAppointmentXml(value, indent + '   ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          // Handle simple values - escape XML special characters
-          const escapedValue = String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&apos;');
+          // Handle simple values - escape XML special characters using helper method
+          const escapedValue = this.xmlEscape(String(value));
           xml += `${indent}<sch:${key}>${escapedValue}</sch:${key}>\n`;
         }
       }
@@ -522,7 +507,7 @@ ${appointmentXml}
     };
 
     const appointmentXml = buildAppointmentXml(appointmentData);
-
+    
     return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:sch="http://www.kareo.com/api/schemas/">
   <soapenv:Header/>
@@ -530,9 +515,9 @@ ${appointmentXml}
     <sch:DeleteAppointment>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
 ${appointmentXml}
       </sch:request>
@@ -555,12 +540,8 @@ ${appointmentXml}
           xml += buildAppointmentXml(value, indent + '   ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          const escapedValue = String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&apos;');
+          // Use xmlEscape helper method for consistency
+          const escapedValue = this.xmlEscape(String(value));
           xml += `${indent}<sch:${key}>${escapedValue}</sch:${key}>\n`;
         }
       }
@@ -576,9 +557,9 @@ ${appointmentXml}
     <sch:UpdateAppointment>
       <sch:request>
         <sch:RequestHeader>
-          <sch:CustomerKey>${auth.CustomerKey}</sch:CustomerKey>
-          <sch:Password>${auth.Password}</sch:Password>
-          <sch:User>${auth.User}</sch:User>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
 ${appointmentXml}
       </sch:request>
@@ -1891,8 +1872,21 @@ ${appointmentXml}
   async deactivatePatient(patientId) {
     try {
       const client = await this.getClient();
-      const args = { PatientID: patientId };
+      
+      // Build the request structure according to the SOAP API
+      const args = {
+        request: {
+          RequestHeader: this.buildRequestHeader(),
+          PatientID: patientId
+        }
+      };
+
+      // Remove undefined/null values to avoid sending '?' placeholders
+      this.cleanRequestData(args);
+      
+      console.log("DeactivatePatient args:", JSON.stringify(args, null, 2));
       const [result] = await client.DeactivatePatientAsync(args);
+      console.log("DeactivatePatient result:", result);
       return { success: 1, tebraResponse: result };
     } catch (error) {
       console.error('Tebra SOAP: DeactivatePatient error', error.message);
@@ -1902,6 +1896,9 @@ ${appointmentXml}
 
   // Documents
   async createDocument(documentData) {
+    // Import document service for local storage
+    const documentService = require('./tebraDocumentService');
+    
     // Hardened document creation with validation, SOAP Fault parsing, and retries with minimal payloads
     const ensureBase64 = (input) => {
       if (!input) return '';
@@ -1999,7 +1996,32 @@ ${appointmentXml}
       console.log('CreateDocument args:', JSON.stringify(args, null, 2));
       const [result] = await client.CreateDocumentAsync(args);
       console.log('CreateDocument result:', result);
-      return this.normalizeCreateDocumentResponse(result);
+      const normalizedResult = this.normalizeCreateDocumentResponse(result);
+      
+      // Store document metadata in local database for retrieval
+      // (since Tebra SOAP 2.1 doesn't support GetDocuments/GetDocumentContent)
+      try {
+        await documentService.initialize(); // Ensure table exists
+        await documentService.storeDocument({
+          tebraDocumentId: normalizedResult.id,
+          patientId: documentData.patientId,
+          practiceId: documentData.practiceId,
+          name: documentData.name || 'Document',
+          fileName: documentData.fileName || `document-${Date.now()}.json`,
+          label: documentData.label || 'General',
+          status: documentData.status || 'Completed',
+          documentDate: documentData.documentDate || new Date().toISOString(),
+          documentNotes: documentData.documentNotes || documentData.notes || '',
+          fileContentBase64: documentData.fileContent || '',
+          mimeType: documentData.mimeType || 'application/json'
+        });
+        console.log(`✅ [DOCUMENT] Stored document metadata in local database: ${normalizedResult.id}`);
+      } catch (dbError) {
+        // Non-critical: log but don't fail document creation
+        console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+      }
+      
+      return normalizedResult;
     } catch (error) {
       const faultMsg = parseSoapFault(error);
       console.error('Tebra SOAP: CreateDocument error', error.message, faultMsg ? `| Fault: ${faultMsg}` : '');
@@ -2012,7 +2034,30 @@ ${appointmentXml}
           console.log('CreateDocument retry (minimal) args:', JSON.stringify(minimalArgs, null, 2));
           const [result2] = await client.CreateDocumentAsync(minimalArgs);
           console.log('CreateDocument retry result:', result2);
-          return this.normalizeCreateDocumentResponse(result2);
+          const normalizedResult2 = this.normalizeCreateDocumentResponse(result2);
+          
+          // Store document metadata in local database for retrieval
+          try {
+            await documentService.initialize();
+            await documentService.storeDocument({
+              tebraDocumentId: normalizedResult2.id,
+              patientId: documentData.patientId,
+              practiceId: documentData.practiceId,
+              name: documentData.name || 'Document',
+              fileName: documentData.fileName || `document-${Date.now()}.json`,
+              label: documentData.label || 'General',
+              status: documentData.status || 'Completed',
+              documentDate: documentData.documentDate || new Date().toISOString(),
+              documentNotes: documentData.documentNotes || documentData.notes || '',
+              fileContentBase64: documentData.fileContent || '',
+              mimeType: documentData.mimeType || 'application/json'
+            });
+            console.log(`✅ [DOCUMENT] Stored document metadata in local database (retry): ${normalizedResult2.id}`);
+          } catch (dbError) {
+            console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+          }
+          
+          return normalizedResult2;
         } catch (retryErr) {
           const e = new Error(`Tebra CreateDocument failed: ${faultMsg}`);
           e.status = 502;
@@ -2049,6 +2094,17 @@ ${appointmentXml}
       console.log("DeleteDocument args:", JSON.stringify(args, null, 2));
       const [result] = await client.DeleteDocumentAsync(args);
       console.log("DeleteDocument result:", result);
+      
+      // Also delete from local database (soft delete)
+      try {
+        const documentService = require('./tebraDocumentService');
+        await documentService.deleteDocument(documentId);
+        console.log(`✅ [DOCUMENT] Deleted document from local database: ${documentId}`);
+      } catch (dbError) {
+        // Non-critical: log but don't fail document deletion
+        console.warn('⚠️ [DOCUMENT] Failed to delete document from database (non-critical):', dbError?.message || dbError);
+      }
+      
       return { success: 1, tebraResponse: result };
     } catch (error) {
       console.error('Tebra SOAP: DeleteDocument error', error.message);
@@ -2885,6 +2941,22 @@ ${appointmentXml}
   // Availability and Scheduling
   async getAvailability(options = {}) {
     try {
+      // Check cache first
+      const cacheService = require('./cacheService');
+      const cacheParams = {
+        providerId: options.providerId || '1',
+        practiceId: options.practiceId,
+        fromDate: options.fromDate,
+        toDate: options.toDate,
+        isAvailable: options.isAvailable
+      };
+      
+      const cached = await cacheService.getCachedTebraResponse('getAvailability', cacheParams);
+      if (cached) {
+        console.log("GetAvailability: Cache hit");
+        return cached;
+      }
+
       const client = await this.getClient();
       
       // Build the request structure according to the SOAP API
@@ -2943,7 +3015,12 @@ ${appointmentXml}
       console.log("GetAvailability args:", JSON.stringify(args, null, 2));
       const [result] = await client.GetAvailabilityAsync(args);
       console.log("GetAvailability result:", result);
-      return this.normalizeGetAvailabilityResponse(result);
+      const normalized = this.normalizeGetAvailabilityResponse(result);
+      
+      // Cache the result
+      await cacheService.cacheTebraResponse('getAvailability', cacheParams, normalized);
+      
+      return normalized;
     } catch (error) {
       console.error('Tebra SOAP: GetAvailability error', error.message);
       throw error;
@@ -4116,30 +4193,604 @@ ${appointmentXml}
     }
     return obj;
   }
+
+  // ============================================
+  // ENCOUNTER MANAGEMENT (Official API Methods)
+  // ============================================
+
+  /**
+   * Create Encounter - Creates encounter with service lines (charges)
+   * This is the OFFICIAL way to create charges in Tebra
+   * Reference: Official API Guide Section 4.16
+   */
+  async createEncounter(encounterData) {
+    try {
+      const auth = this.getAuthHeader();
+      const practiceId = encounterData.practiceId || encounterData.PracticeId || encounterData.Practice?.PracticeID;
+      const practiceName = encounterData.practiceName || encounterData.Practice?.PracticeName;
+      
+      if (!practiceId && !practiceName) {
+        throw new Error('PracticeId or PracticeName is required for CreateEncounter');
+      }
+
+      // Build encounter XML according to official API structure
+      const buildEncounterXml = (data, indent = '         ') => {
+        let xml = '';
+        
+        // Practice (required)
+        if (data.Practice || practiceId || practiceName) {
+          xml += `${indent}<sch:Practice>\n`;
+          if (practiceId) xml += `${indent}  <sch:PracticeID>${this.xmlEscape(String(practiceId))}</sch:PracticeID>\n`;
+          if (practiceName) xml += `${indent}  <sch:PracticeName>${this.xmlEscape(practiceName)}</sch:PracticeName>\n`;
+          xml += `${indent}</sch:Practice>\n`;
+        }
+
+        // Appointment (optional)
+        if (data.Appointment || data.appointmentId) {
+          xml += `${indent}<sch:Appointment>\n`;
+          if (data.appointmentId || data.Appointment?.AppointmentID) {
+            xml += `${indent}  <sch:AppointmentID>${this.xmlEscape(String(data.appointmentId || data.Appointment.AppointmentID))}</sch:AppointmentID>\n`;
+          }
+          xml += `${indent}</sch:Appointment>\n`;
+        }
+
+        // Patient (required)
+        if (data.Patient || data.patientId) {
+          xml += `${indent}<sch:Patient>\n`;
+          if (data.patientId || data.Patient?.PatientID) {
+            xml += `${indent}  <sch:PatientID>${this.xmlEscape(String(data.patientId || data.Patient.PatientID))}</sch:PatientID>\n`;
+          }
+          if (data.Patient?.FirstName) xml += `${indent}  <sch:FirstName>${this.xmlEscape(data.Patient.FirstName)}</sch:FirstName>\n`;
+          if (data.Patient?.LastName) xml += `${indent}  <sch:LastName>${this.xmlEscape(data.Patient.LastName)}</sch:LastName>\n`;
+          xml += `${indent}</sch:Patient>\n`;
+        }
+
+        // Case (required)
+        if (data.Case || data.caseId || data.caseName) {
+          xml += `${indent}<sch:Case>\n`;
+          if (data.caseId || data.Case?.CaseID) {
+            xml += `${indent}  <sch:CaseID>${this.xmlEscape(String(data.caseId || data.Case.CaseID))}</sch:CaseID>\n`;
+          }
+          if (data.caseName || data.Case?.CaseName) {
+            xml += `${indent}  <sch:CaseName>${this.xmlEscape(data.caseName || data.Case.CaseName)}</sch:CaseName>\n`;
+          }
+          if (data.payerScenario || data.Case?.CasePayerScenario) {
+            xml += `${indent}  <sch:CasePayerScenario>${this.xmlEscape(data.payerScenario || data.Case.CasePayerScenario)}</sch:CasePayerScenario>\n`;
+          }
+          xml += `${indent}</sch:Case>\n`;
+        }
+
+        // Service Start/End Date (required)
+        if (data.serviceStartDate) {
+          xml += `${indent}<sch:ServiceStartDate>${this.xmlEscape(data.serviceStartDate)}</sch:ServiceStartDate>\n`;
+        }
+        if (data.serviceEndDate) {
+          xml += `${indent}<sch:ServiceEndDate>${this.xmlEscape(data.serviceEndDate)}</sch:ServiceEndDate>\n`;
+        }
+
+        // Post Date (required)
+        if (data.postDate) {
+          xml += `${indent}<sch:PostDate>${this.xmlEscape(data.postDate)}</sch:PostDate>\n`;
+        }
+
+        // Service Lines (required) - This is where charges are created
+        if (data.serviceLines && Array.isArray(data.serviceLines) && data.serviceLines.length > 0) {
+          xml += `${indent}<sch:ServiceLines>\n`;
+          data.serviceLines.forEach((line) => {
+            xml += `${indent}  <sch:ServiceLine>\n`;
+            if (line.procedureCode) xml += `${indent}    <sch:ProcedureCode>${this.xmlEscape(line.procedureCode)}</sch:ProcedureCode>\n`;
+            if (line.diagnosisCode1) xml += `${indent}    <sch:DiagnosisCode1>${this.xmlEscape(line.diagnosisCode1)}</sch:DiagnosisCode1>\n`;
+            if (line.units) xml += `${indent}    <sch:Units>${this.xmlEscape(String(line.units))}</sch:Units>\n`;
+            if (line.unitCharge !== undefined) xml += `${indent}    <sch:UnitCharge>${this.xmlEscape(String(line.unitCharge))}</sch:UnitCharge>\n`;
+            xml += `${indent}  </sch:ServiceLine>\n`;
+          });
+          xml += `${indent}</sch:ServiceLines>\n`;
+        }
+
+        return xml;
+      };
+
+      const encounterXml = buildEncounterXml(encounterData);
+      
+      const soapXml = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:CreateEncounter>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:Encounter>
+${encounterXml}        </sch:Encounter>
+      </sch:request>
+    </sch:CreateEncounter>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+      const { data } = await axios.post(
+        this.soapEndpoint,
+        soapXml,
+        {
+          headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': '"http://www.kareo.com/api/schemas/KareoServices/CreateEncounter"'
+          }
+        }
+      );
+
+      // Parse response
+      const encounterIdMatch = String(data).match(/<EncounterID>(.*?)<\/EncounterID>/i);
+      const encounterId = encounterIdMatch ? encounterIdMatch[1] : null;
+
+      return {
+        encounterId,
+        success: !!encounterId,
+        raw: data
+      };
+    } catch (error) {
+      console.error('❌ [TEBRA] Error creating encounter:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Encounter Details
+   * Reference: Official API Guide Section 4.5
+   */
+  async getEncounterDetails(encounterId, practiceId) {
+    try {
+      const auth = this.getAuthHeader();
+      
+      const soapXml = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:GetEncounterDetails>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:PracticeID>${this.xmlEscape(String(practiceId))}</sch:PracticeID>
+        <sch:PracticeName>${this.xmlEscape(this.practiceName)}</sch:PracticeName>
+        <sch:EncounterID>${this.xmlEscape(String(encounterId))}</sch:EncounterID>
+      </sch:request>
+    </sch:GetEncounterDetails>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+      const { data } = await axios.post(
+        this.soapEndpoint,
+        soapXml,
+        {
+          headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': '"http://www.kareo.com/api/schemas/KareoServices/GetEncounterDetails"'
+          }
+        }
+      );
+
+      return this.parseRawSOAPResponse(data, 'GetEncounterDetails');
+    } catch (error) {
+      console.error('❌ [TEBRA] Error getting encounter details:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Update Encounter Status
+   * Reference: Official API Guide Section 4.20
+   */
+  async updateEncounterStatus(encounterId, status, practiceId) {
+    try {
+      const auth = this.getAuthHeader();
+      
+      const soapXml = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:UpdateEncounterStatus>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:Practice>
+          <sch:PracticeID>${this.xmlEscape(String(practiceId))}</sch:PracticeID>
+        </sch:Practice>
+        <sch:EncounterID>${this.xmlEscape(String(encounterId))}</sch:EncounterID>
+        <sch:EncounterStatus>${this.xmlEscape(status)}</sch:EncounterStatus>
+      </sch:request>
+    </sch:UpdateEncounterStatus>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+      const { data } = await axios.post(
+        this.soapEndpoint,
+        soapXml,
+        {
+          headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': '"http://www.kareo.com/api/schemas/KareoServices/UpdateEncounterStatus"'
+          }
+        }
+      );
+
+      return this.parseRawSOAPResponse(data, 'UpdateEncounterStatus');
+    } catch (error) {
+      console.error('❌ [TEBRA] Error updating encounter status:', error.message);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // BILLING OPERATIONS (Official API Methods)
+  // ============================================
+
+  /**
+   * Get Charges
+   * Reference: Official API Guide Section 4.4
+   */
+  async getCharges(options = {}) {
+    try {
+      const filters = {
+        PracticeName: options.practiceName || this.practiceName,
+        ...(options.fromCreatedDate && { FromCreatedDate: options.fromCreatedDate }),
+        ...(options.toCreatedDate && { ToCreatedDate: options.toCreatedDate }),
+        ...(options.patientId && { PatientID: String(options.patientId) }),
+        ...(options.patientName && { PatientName: options.patientName })
+      };
+
+      return await this.callRawSOAPMethod('GetCharges', {}, filters);
+    } catch (error) {
+      this.handleSOAPError(error, 'GetCharges', { options });
+    }
+  }
+
+  /**
+   * Get Payments
+   * Reference: Official API Guide Section 4.8
+   */
+  async getPayments(options = {}) {
+    try {
+      const filters = {
+        ...(options.practiceId && { PracticeID: String(options.practiceId) }),
+        ...(options.practiceName && { PracticeName: options.practiceName }),
+        ...(options.patientId && { PatientID: String(options.patientId) }),
+        ...(options.fromPostDate && { FromPostDate: options.fromPostDate }),
+        ...(options.toPostDate && { ToPostDate: options.toPostDate })
+      };
+
+      return await this.callRawSOAPMethod('GetPayments', {}, filters);
+    } catch (error) {
+      this.handleSOAPError(error, 'GetPayments', { options });
+    }
+  }
+
+  /**
+   * Create Payments (Official method - plural)
+   * Reference: Official API Guide Section 4.18
+   */
+  async createPayments(paymentData) {
+    try {
+      const auth = this.getAuthHeader();
+      const practiceId = paymentData.practiceId || paymentData.Practice?.PracticeID;
+      const practiceName = paymentData.practiceName || paymentData.Practice?.PracticeName;
+      
+      const buildPaymentXml = (data, indent = '         ') => {
+        let xml = '';
+        
+        // Practice (optional but recommended)
+        if (practiceId || practiceName) {
+          xml += `${indent}<sch:Practice>\n`;
+          if (practiceId) xml += `${indent}  <sch:PracticeID>${this.xmlEscape(String(practiceId))}</sch:PracticeID>\n`;
+          if (practiceName) xml += `${indent}  <sch:PracticeName>${this.xmlEscape(practiceName)}</sch:PracticeName>\n`;
+          xml += `${indent}</sch:Practice>\n`;
+        }
+
+        // Patient (required)
+        if (data.Patient || data.patientId) {
+          xml += `${indent}<sch:Patient>\n`;
+          if (data.patientId || data.Patient?.PatientID) {
+            xml += `${indent}  <sch:PatientID>${this.xmlEscape(String(data.patientId || data.Patient.PatientID))}</sch:PatientID>\n`;
+          }
+          if (data.Patient?.FirstName) xml += `${indent}  <sch:FirstName>${this.xmlEscape(data.Patient.FirstName)}</sch:FirstName>\n`;
+          if (data.Patient?.LastName) xml += `${indent}  <sch:LastName>${this.xmlEscape(data.Patient.LastName)}</sch:LastName>\n`;
+          xml += `${indent}</sch:Patient>\n`;
+        }
+
+        // Insurance (optional)
+        if (data.Insurance || data.companyPlanId || data.companyPlanName) {
+          xml += `${indent}<sch:Insurance>\n`;
+          if (data.companyPlanId || data.Insurance?.CompanyPlanID) {
+            xml += `${indent}  <sch:CompanyPlanID>${this.xmlEscape(String(data.companyPlanId || data.Insurance.CompanyPlanID))}</sch:CompanyPlanID>\n`;
+          }
+          if (data.companyPlanName || data.Insurance?.CompanyPlanName) {
+            xml += `${indent}  <sch:CompanyPlanName>${this.xmlEscape(data.companyPlanName || data.Insurance.CompanyPlanName)}</sch:CompanyPlanName>\n`;
+          }
+          xml += `${indent}</sch:Insurance>\n`;
+        }
+
+        // Payment (required)
+        xml += `${indent}<sch:Payment>\n`;
+        if (data.amountPaid !== undefined) xml += `${indent}  <sch:AmountPaid>${this.xmlEscape(String(data.amountPaid))}</sch:AmountPaid>\n`;
+        if (data.paymentMethod) xml += `${indent}  <sch:PaymentMethod>${this.xmlEscape(data.paymentMethod)}</sch:PaymentMethod>\n`;
+        if (data.referenceNumber) xml += `${indent}  <sch:ReferenceNumber>${this.xmlEscape(data.referenceNumber)}</sch:ReferenceNumber>\n`;
+        if (data.postDate) xml += `${indent}  <sch:PostDate>${this.xmlEscape(data.postDate)}</sch:PostDate>\n`;
+        if (data.payerType) xml += `${indent}  <sch:PayerType>${this.xmlEscape(data.payerType)}</sch:PayerType>\n`;
+        xml += `${indent}</sch:Payment>\n`;
+
+        return xml;
+      };
+
+      const paymentXml = buildPaymentXml(paymentData);
+      
+      const soapXml = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:CreatePayments>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:Payment>
+${paymentXml}        </sch:Payment>
+      </sch:request>
+    </sch:CreatePayments>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+      const { data } = await axios.post(
+        this.soapEndpoint,
+        soapXml,
+        {
+          headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': '"http://www.kareo.com/api/schemas/KareoServices/CreatePayments"'
+          }
+        }
+      );
+
+      // Parse response
+      const paymentIdMatch = String(data).match(/<PaymentID>(.*?)<\/PaymentID>/i);
+      const paymentId = paymentIdMatch ? paymentIdMatch[1] : null;
+
+      return {
+        paymentId,
+        success: !!paymentId,
+        raw: data
+      };
+    } catch (error) {
+      console.error('❌ [TEBRA] Error creating payment:', error.message);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // SERVICE LOCATIONS
+  // ============================================
+
+  /**
+   * Get Service Locations
+   * Reference: Official API Guide Section 4.12
+   */
+  async getServiceLocations(options = {}) {
+    try {
+      const filters = {
+        PracticeName: options.practiceName || this.practiceName,
+        PracticeID: String(options.practiceId || process.env.TEBRA_PRACTICE_ID || ''),
+        ...(options.id && { ID: String(options.id) })
+      };
+
+      return await this.callRawSOAPMethod('GetServiceLocations', {}, filters);
+    } catch (error) {
+      this.handleSOAPError(error, 'GetServiceLocations', { options });
+    }
+  }
+
+  // ============================================
+  // PROCEDURE CODES
+  // ============================================
+
+  /**
+   * Get Procedure Code
+   * Reference: Official API Guide Section 4.10
+   */
+  async getProcedureCode(options = {}) {
+    try {
+      const filters = {
+        ...(options.id && { ID: String(options.id) }),
+        ...(options.procedureCode && { ProcedureCode: options.procedureCode }),
+        ...(options.active !== undefined && { Active: options.active })
+      };
+
+      return await this.callRawSOAPMethod('GetProcedureCode', {}, filters);
+    } catch (error) {
+      this.handleSOAPError(error, 'GetProcedureCode', { options });
+    }
+  }
+
+  // ============================================
+  // TRANSACTIONS
+  // ============================================
+
+  /**
+   * Get Transactions
+   * Reference: Official API Guide Section 4.13
+   */
+  async getTransactions(options = {}) {
+    try {
+      const filters = {
+        PracticeName: options.practiceName || this.practiceName,
+        ...(options.fromTransactionDate && { FromTransactionDate: options.fromTransactionDate }),
+        ...(options.toTransactionDate && { ToTransactionDate: options.toTransactionDate }),
+        ...(options.patientId && { PatientID: String(options.patientId) })
+      };
+
+      return await this.callRawSOAPMethod('GetTransactions', {}, filters);
+    } catch (error) {
+      this.handleSOAPError(error, 'GetTransactions', { options });
+    }
+  }
+
+  // ============================================
+  // PATIENT CASE MANAGEMENT
+  // ============================================
+
+  /**
+   * Update Primary Patient Case
+   * Reference: Official API Guide Section 4.22
+   */
+  async updatePrimaryPatientCase(patientCaseId) {
+    try {
+      const auth = this.getAuthHeader();
+      
+      const soapXml = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:UpdatePrimaryPatientCase>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:PatientCaseID>${this.xmlEscape(String(patientCaseId))}</sch:PatientCaseID>
+      </sch:request>
+    </sch:UpdatePrimaryPatientCase>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+
+      const { data } = await axios.post(
+        this.soapEndpoint,
+        soapXml,
+        {
+          headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': '"http://www.kareo.com/api/schemas/KareoServices/UpdatePrimaryPatientCase"'
+          }
+        }
+      );
+
+      const successMatch = String(data).match(/<Success>(.*?)<\/Success>/i);
+      const success = successMatch ? successMatch[1].toLowerCase() === 'true' : false;
+
+      return {
+        success,
+        raw: data
+      };
+    } catch (error) {
+      console.error('❌ [TEBRA] Error updating primary patient case:', error.message);
+      throw error;
+    }
+  }
+
+  // Helper method for XML escaping
+  xmlEscape(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
 }
 
 // Export both the class and an instance for flexibility
 const tebraServiceInstance = new TebraService();
 
-// Minimal document APIs to support listing and downloading patient documents
+// Document APIs with local database workaround
 // NOTE: KareoServices SOAP 2.1 does NOT expose document-listing or document-download operations
-// (WSDL includes CreateDocument/DeleteDocument only). These endpoints therefore return empty results.
-tebraServiceInstance.getDocuments = async function({ patientId }) {
+// (WSDL includes CreateDocument/DeleteDocument only). We store document metadata locally
+// when creating documents, so we can retrieve them even though Tebra doesn't support listing.
+tebraServiceInstance.getDocuments = async function({ patientId, label, name }) {
   if (!patientId) throw new Error('patientId is required');
-  if (!this._warnedDocumentsUnsupported) {
-    this._warnedDocumentsUnsupported = true;
-    console.warn('[TEBRA] getDocuments is not supported by KareoServices SOAP 2.1; returning empty list.');
+  
+  try {
+    const documentService = require('./tebraDocumentService');
+    await documentService.initialize(); // Ensure table exists
+    
+    const documents = await documentService.getDocumentsForPatient({ patientId, label, name });
+    
+    // Transform database records to match expected format
+    const transformed = documents.map(doc => ({
+      id: doc.tebra_document_id || doc.id,
+      documentId: doc.tebra_document_id || doc.id,
+      patientId: doc.patient_id,
+      practiceId: doc.practice_id,
+      name: doc.name,
+      fileName: doc.file_name,
+      label: doc.label,
+      status: doc.status,
+      documentDate: doc.document_date,
+      createdAt: doc.created_at,
+      notes: doc.document_notes,
+      fileSize: doc.file_size_bytes,
+      mimeType: doc.mime_type,
+      // Include fileContent if available (for backward compatibility)
+      fileContent: doc.file_content_base64 || null
+    }));
+    
+    return { documents: transformed };
+  } catch (error) {
+    console.error('❌ [TEBRA] Error getting documents from local database:', error.message);
+    // Fallback to empty list if database query fails
+    return { documents: [] };
   }
-  return { documents: [] };
 };
 
 tebraServiceInstance.getDocumentContent = async function(documentId) {
   if (!documentId) throw new Error('documentId is required');
-  if (!this._warnedDocumentsUnsupported) {
-    this._warnedDocumentsUnsupported = true;
-    console.warn('[TEBRA] getDocumentContent is not supported by KareoServices SOAP 2.1; returning null content.');
+  
+  try {
+    const documentService = require('./tebraDocumentService');
+    await documentService.initialize(); // Ensure table exists
+    
+    const doc = await documentService.getDocumentContent(documentId);
+    
+    if (!doc) {
+      return { 
+        fileName: `document-${documentId}.pdf`, 
+        mimeType: 'application/pdf', 
+        base64Content: null 
+      };
+    }
+    
+    // Return document content in expected format
+    return {
+      id: doc.tebra_document_id || doc.id,
+      documentId: doc.tebra_document_id || doc.id,
+      patientId: doc.patient_id,
+      practiceId: doc.practice_id,
+      fileName: doc.file_name,
+      name: doc.name,
+      label: doc.label,
+      status: doc.status,
+      documentDate: doc.document_date,
+      notes: doc.document_notes,
+      mimeType: doc.mime_type || 'application/json',
+      base64Content: doc.file_content_base64 || null,
+      fileSize: doc.file_size_bytes
+    };
+  } catch (error) {
+    console.error('❌ [TEBRA] Error getting document content from local database:', error.message);
+    // Fallback to null content if database query fails
+    return { 
+      fileName: `document-${documentId}.pdf`, 
+      mimeType: 'application/pdf', 
+      base64Content: null 
+    };
   }
-  return { fileName: `document-${documentId}.pdf`, mimeType: 'application/pdf', base64Content: null };
 };
 
 // Export both the instance (default) and the class

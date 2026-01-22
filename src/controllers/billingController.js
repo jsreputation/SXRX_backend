@@ -7,6 +7,9 @@ const tebraService = require('../services/tebraService');
 const tebraBillingService = require('../services/tebraBillingService');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
+const questionnaireCompletionService = require('../services/questionnaireCompletionService');
+const customerPatientMapService = require('../services/customerPatientMapService');
+const { determineState } = require('../utils/stateUtils');
 const axios = require('axios');
 const moment = require('moment-timezone');
 
@@ -156,7 +159,7 @@ function parseDurationMinutes(raw) {
   return null;
 }
 
-function parseCowlendarDateTime(value, tz) {
+function parseAppointmentDateTime(value, tz) {
   const s = safeTrim(value);
   if (!s) return null;
 
@@ -189,7 +192,7 @@ function parseCowlendarDateTime(value, tz) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function extractCowlendarBookingMeta(order, lineItems) {
+function extractAppointmentBookingMeta(order, lineItems) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const candidates = [];
 
@@ -238,7 +241,7 @@ function extractCowlendarBookingMeta(order, lineItems) {
     let usedParts = null;
 
     if (startRaw) {
-      const parsed = parseCowlendarDateTime(startRaw, tz);
+      const parsed = parseAppointmentDateTime(startRaw, tz);
       if (parsed) {
         startDate = parsed;
         startSource = 'single_field';
@@ -249,7 +252,7 @@ function extractCowlendarBookingMeta(order, lineItems) {
     if (!startDate && dateRaw && timeRaw) {
       // Combine into an ISO-ish string and parse in tz
       const combined = `${dateRaw} ${timeRaw}`;
-      const parsed = parseCowlendarDateTime(combined, tz);
+      const parsed = parseAppointmentDateTime(combined, tz);
       if (parsed) {
         startDate = parsed;
         startSource = 'date_time_fields';
@@ -259,7 +262,7 @@ function extractCowlendarBookingMeta(order, lineItems) {
 
     // Some apps store date only in "appointment_date" and time in "start_time" but date is YYYY-MM-DD and time is HH:mm
     if (!startDate && (dateRaw || timeRaw)) {
-      const parsed = parseCowlendarDateTime(startRaw || dateRaw || timeRaw, tz);
+      const parsed = parseAppointmentDateTime(startRaw || dateRaw || timeRaw, tz);
       if (parsed) {
         startDate = parsed;
         startSource = 'fallback_single';
@@ -274,7 +277,7 @@ function extractCowlendarBookingMeta(order, lineItems) {
       (dateRaw && timeRaw ? 3 : 0) +
       (durationMin ? 1 : 0) +
       (keys.length ? 1 : 0) +
-      (title.includes('appointment') || title.includes('booking') || title.includes('consultation') || title.includes('cowlendar') ? 1 : 0);
+          (title.includes('appointment') || title.includes('booking') || title.includes('consultation') ? 1 : 0);
 
     candidates.push({
       score,
@@ -367,52 +370,46 @@ async function makeShopifyAdminRequest(endpoint, method = 'GET', data = null) {
   }
 }
 
+// Import order validation service
+const orderValidationService = require('../services/orderValidationService');
+
 /**
  * Validate order before processing
  * - Checks if customer has completed questionnaire for products that require it
  * - Checks state restrictions (e.g., Ketamine not available in CA)
  */
-async function validateOrderBeforeProcessing(order) {
-  const lineItems = order.line_items || [];
-  const shippingAddress = order.shipping_address || order.billing_address;
-  const state = shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state;
-  const customerId = order.customer?.id;
+async function validateOrderBeforeProcessing(order, req = null) {
+  return await orderValidationService.validateOrderBeforeProcessing(order, req);
+}
 
-  const normalizeBool = (value) => {
-    if (value === true) return true;
-    if (value === false) return false;
-    const v = String(value ?? '').trim().toLowerCase();
-    if (!v) return false;
-    return v === 'true' || v === '1' || v === 'yes' || v === 'y';
-  };
+/**
+ * Extract email from order (delegated to service)
+ */
+async function extractEmailFromOrder(order) {
+  return await orderValidationService.extractEmailFromOrder(order);
+}
 
-  const getPropValue = (props, keyCandidates) => {
-    if (!props) return null;
-    const candidates = Array.isArray(keyCandidates) ? keyCandidates : [keyCandidates];
+/**
+ * Get property value from line item properties (delegated to service)
+ */
+function getPropValue(props, keyCandidates) {
+  return orderValidationService.getPropValue(props, keyCandidates);
+}
 
-    // Shopify order line item properties are typically: [{ name, value }, ...]
-    if (Array.isArray(props)) {
-      for (const k of candidates) {
-        const match = props.find(p => String(p?.name || '').toLowerCase() === String(k).toLowerCase());
-        if (match && match.value !== undefined) return match.value;
-      }
-      return null;
-    }
+/**
+ * Normalize boolean value (delegated to service)
+ */
+function normalizeBool(value) {
+  return orderValidationService.normalizeBool(value);
+}
 
-    // Some callers may provide properties as an object map
-    if (typeof props === 'object') {
-      for (const k of candidates) {
-        if (Object.prototype.hasOwnProperty.call(props, k)) return props[k];
-        // Also try case-insensitive lookup
-        const foundKey = Object.keys(props).find(pk => pk.toLowerCase() === String(k).toLowerCase());
-        if (foundKey) return props[foundKey];
-      }
-    }
-    return null;
-  };
-  
+/**
+ * Legacy function - now uses service
+ */
+async function validateOrderBeforeProcessing_legacy(order, req = null) {
   // Fetch customer metafields for questionnaire status
   let customerMetafields = {};
+  const customerId = order.customer?.id;
   if (customerId) {
     try {
       customerMetafields = await shopifyUserService.getCustomerMetafields(customerId);
@@ -473,8 +470,26 @@ async function validateOrderBeforeProcessing(order) {
     
     // Check questionnaire requirement
     if (productUtils.requiresQuestionnaire(product)) {
+      // Server-side validation using questionnaire completion registry
+      let isValidCompletion = false;
+      if (email) {
+        try {
+          isValidCompletion = await questionnaireCompletionService.validateForCheckout({
+            email: email,
+            customerId: customerId || null,
+            productId: productId
+          });
+        } catch (validationErr) {
+          console.warn(`[ORDER VALIDATION] Questionnaire validation error for product ${productId}:`, validationErr?.message || validationErr);
+          // Fall back to legacy validation if registry check fails
+        }
+      }
+      
+      // Legacy validation (for backward compatibility)
       const itemHasProof = normalizeBool(getPropValue(item?.properties, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']));
-      if (questionnaireStatus !== 'completed' && !orderHasQuestionnaireProof && !itemHasProof) {
+      
+      // Require either server-side validation OR legacy proof
+      if (!isValidCompletion && questionnaireStatus !== 'completed' && !orderHasQuestionnaireProof && !itemHasProof) {
         throw new Error(`Questionnaire required for ${product.title || item.title}`);
       }
     }
@@ -482,6 +497,8 @@ async function validateOrderBeforeProcessing(order) {
 }
 
 exports.handleShopifyOrderPaid = async (req, res) => {
+  const webhookRetryService = require('../services/webhookRetryService');
+  
   try {
     const order = req.body || {};
     const shopifyOrderId = String(order.id || order.order_id || order.name || 'unknown');
@@ -720,35 +737,48 @@ exports.handleShopifyOrderPaid = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ [BILLING] handleShopifyOrderPaid error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process order webhook', error: error.message });
+    
+    // Store failed webhook for retry
+    try {
+      await webhookRetryService.storeFailedWebhook({
+        webhookType: 'shopify_order_paid',
+        webhookUrl: '/webhooks/shopify/orders/paid',
+        payload: req.body,
+        headers: req.headers,
+        error: error
+      });
+    } catch (retryError) {
+      console.error('[BILLING] Failed to store webhook for retry:', retryError);
+    }
+    
+    // Return 200 to prevent Shopify from retrying immediately
+    res.status(200).json({ 
+      success: false, 
+      message: 'Order processing failed, will retry',
+      error: error.message 
+    });
   }
 };
 
 /**
  * Handle Shopify Order Created webhook
  * 
- * PRIMARY INTEGRATION METHOD for Cowlendar bookings.
+ * Processes orders that contain appointment booking information.
  * 
- * IMPORTANT: Cowlendar does NOT have direct webhook configuration in their app settings.
- * Integration works through Shopify Order Created webhook when Cowlendar creates orders.
+ * When an order contains appointment data:
+ * 1. Shopify sends Order Created webhook to this endpoint
+ * 2. Backend detects if order has appointment properties (appointment_date, start_time, etc.)
+ * 3. Backend extracts booking information from order properties/notes
+ * 4. Backend creates/updates patient in Tebra
+ * 5. Backend creates appointment in Tebra (30 minutes duration)
  * 
- * When Cowlendar creates a booking:
- * 1. Cowlendar may create a Shopify order (if configured to do so)
- * 2. Shopify sends Order Created webhook to this endpoint
- * 3. Backend detects if it's a Cowlendar booking (by product tags or order notes)
- * 4. Backend extracts booking information from order properties/notes
- * 5. Backend creates/updates patient in Tebra
- * 6. Backend creates appointment in Tebra
- * 7. Backend uses Cowlendar-provided meeting link if available (Elite plan)
- *    Otherwise falls back to backend generation (currently disabled)
- * 
- * Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
- * Meeting links may be included in:
- * - Order line item properties (meeting_link, video_url, etc.)
- * - Order notes (as URLs)
- * - Direct webhook payload (if using direct webhook endpoint)
+ * Appointment data may be included in:
+ * - Order line item properties (appointment_date, start_time, etc.)
+ * - Order notes (as ISO datetime strings)
  */
 exports.handleShopifyOrderCreated = async (req, res) => {
+  const webhookRetryService = require('../services/webhookRetryService');
+  
   try {
     // Log at the VERY start to catch ALL webhook requests
     console.log(`🔔 [WEBHOOK RECEIVED] Order Created webhook hit - Timestamp: ${new Date().toISOString()}`);
@@ -773,146 +803,73 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       });
     }
 
-    // Check if this is a Cowlendar booking order
-    // Cowlendar orders typically have:
-    // 1. Order notes mentioning "Cowlendar" or "booking" or "appointment"
-    // 2. Order source name containing "cowlendar"
-    // 3. Line item properties with appointment data (appointment_date, start_time, meeting_link, etc.)
-    // 4. Product tags containing "cowlendar" or "booking" or "appointment" (requires API call)
+    // Check if this order contains appointment booking data
+    // Appointment orders typically have:
+    // 1. Line item properties with appointment data (appointment_date, start_time, etc.)
+    // 2. Order notes mentioning "booking" or "appointment"
+    // 3. Line item titles/SKUs with appointment-related keywords
     
-    const orderNote = (order.note || '').toLowerCase();
-    const orderSourceName = (order.source_name || '').toLowerCase();
-    
-    // Method 1: Check order note
-    const isCowlendarOrder = orderNote.includes('cowlendar') || 
-                            orderNote.includes('booking') ||
-                            orderNote.includes('appointment');
-    
-    // Method 2: Check order source name
-    const hasCowlendarSource = orderSourceName.includes('cowlendar');
-    
-    // Method 3: Check line item properties for appointment data (NO API CALL NEEDED)
     const lineItems = order.line_items || [];
     let hasAppointmentProperties = false;
     let appointmentPropertiesFound = [];
     
-    // Also check line item titles and SKUs for appointment-related keywords
-    let hasAppointmentInTitle = false;
-    
+    // Check line item properties for appointment data
     for (const item of lineItems) {
-      const itemTitle = (item.title || '').toLowerCase();
-      const itemSku = (item.sku || '').toLowerCase();
-      const itemVendor = (item.vendor || '').toLowerCase();
-      
-      // Check title, SKU, vendor for appointment keywords
-      if (itemTitle.includes('appointment') || 
-          itemTitle.includes('booking') || 
-          itemTitle.includes('consultation') ||
-          itemTitle.includes('cowlendar') ||
-          itemSku.includes('appointment') ||
-          itemSku.includes('booking') ||
-          itemVendor.includes('cowlendar')) {
-        hasAppointmentInTitle = true;
-        console.log(`   📌 Found appointment keyword in line item: "${item.title}" (SKU: ${item.sku || 'N/A'})`);
-      }
-      
       const properties = item.properties || [];
       for (const prop of properties) {
         const propName = (prop.name || '').toLowerCase();
-        const propValue = (prop.value || '').toLowerCase();
         
         // Check for appointment-related properties
         if (propName.includes('appointment') || 
             propName.includes('booking') || 
-            propName.includes('meeting') ||
             propName.includes('start_time') ||
             propName.includes('end_time') ||
-            propName.includes('date') ||
-            propName.includes('time') ||
-            propValue.includes('meet.google.com') ||
-            propValue.includes('zoom.us') ||
-            propValue.includes('cowlendar') ||
-            propValue.includes('appointment') ||
-            propValue.includes('booking')) {
+            propName.includes('appointment_date') ||
+            propName.includes('appointment_time') ||
+            propName.includes('scheduled_time') ||
+            propName.includes('scheduled_date')) {
           hasAppointmentProperties = true;
           appointmentPropertiesFound.push(`${prop.name}: ${prop.value}`);
         }
       }
     }
     
-    // Method 4: Check product tags via API (fallback, may fail due to auth issues)
-    let hasCowlendarProduct = false;
-    let productTagCheckError = null;
+    // Also check order note for appointment keywords
+    const orderNote = (order.note || '').toLowerCase();
+    const hasAppointmentInNote = orderNote.includes('appointment') || 
+                                 orderNote.includes('booking') ||
+                                 orderNote.includes('consultation');
     
-    for (const item of lineItems) {
-      const productId = item.product_id;
-      if (productId) {
-        try {
-          const productData = await makeShopifyAdminRequest(`products/${productId}.json`);
-          const product = productData.product;
-          const tags = (product.tags || '').toLowerCase();
-          
-          if (tags.includes('cowlendar') || tags.includes('booking') || tags.includes('appointment')) {
-            hasCowlendarProduct = true;
-            break;
-          }
-        } catch (e) {
-          productTagCheckError = e?.message || 'Unknown error';
-          console.warn(`[ORDER CREATED] Failed to fetch product ${productId} (API auth may be invalid):`, e?.message);
-          // Don't break - continue checking other items
-        }
-      }
-    }
+    // Determine if this order contains appointment data
+    const isAppointmentOrder = hasAppointmentProperties || hasAppointmentInNote;
     
-    // Log detection results
-    console.log(`🔍 [COWLENDAR DETECTION] Order ${shopifyOrderId}:`);
-    console.log(`   📝 Order note match: ${isCowlendarOrder} (note: "${order.note || '(empty)'}")`);
-    console.log(`   🏪 Source name match: ${hasCowlendarSource} (source: "${order.source_name || '(empty)'}")`);
-    console.log(`   📋 Appointment properties: ${hasAppointmentProperties} (found: ${appointmentPropertiesFound.length > 0 ? appointmentPropertiesFound.join(', ') : 'none'})`);
-    console.log(`   📌 Appointment in title/SKU: ${hasAppointmentInTitle}`);
-    console.log(`   🏷️  Product tag match: ${hasCowlendarProduct}${productTagCheckError ? ` (API error: ${productTagCheckError})` : ''}`);
-
-    // Determine if this is a Cowlendar order using ANY of the detection methods
-    const isCowlendarBooking = isCowlendarOrder || hasCowlendarSource || hasAppointmentProperties || hasAppointmentInTitle || hasCowlendarProduct;
-    
-    // If not a Cowlendar order, skip processing (let order paid webhook handle it)
-    if (!isCowlendarBooking) {
-      console.log(`⚠️ [ORDER CREATED] Order ${shopifyOrderId} is not a Cowlendar booking - skipping`);
-      console.log(`   💡 Tip: If this IS a Cowlendar booking, ensure:`);
-      console.log(`      - Order note contains "cowlendar", "booking", or "appointment"`);
-      console.log(`      - Order source name contains "cowlendar"`);
-      console.log(`      - Line items have properties with appointment data`);
-      console.log(`      - Product has "cowlendar", "booking", or "appointment" tag (requires valid Shopify API credentials)`);
+    // If not an appointment order, skip processing (let order paid webhook handle it)
+    if (!isAppointmentOrder) {
+      console.log(`⚠️ [ORDER CREATED] Order ${shopifyOrderId} does not contain appointment data - skipping`);
       return res.json({ 
         success: true, 
         skipped: true, 
-        reason: 'not_cowlendar_order',
+        reason: 'not_appointment_order',
         orderNote: order.note || '',
-        lineItemCount: lineItems.length,
-        productIds: lineItems.map(item => item.product_id).filter(Boolean)
+        lineItemCount: lineItems.length
       });
     }
-
-    // Determine which detection method(s) matched
-    const detectionMethods = [];
-    if (isCowlendarOrder) detectionMethods.push('order_note');
-    if (hasCowlendarSource) detectionMethods.push('source_name');
-    if (hasAppointmentProperties) detectionMethods.push('appointment_properties');
-    if (hasAppointmentInTitle) detectionMethods.push('line_item_title_sku');
-    if (hasCowlendarProduct) detectionMethods.push('product_tags');
     
-    console.log(`✅ [STEP 3] [ORDER CREATED] Cowlendar booking order detected for order ${shopifyOrderId}`);
-    console.log(`   🎯 Detection method(s): ${detectionMethods.join(', ') || 'unknown'}`);
+    console.log(`✅ [STEP 3] [ORDER CREATED] Appointment order detected for order ${shopifyOrderId}`);
+    if (hasAppointmentProperties) {
+      console.log(`   📋 Appointment properties found: ${appointmentPropertiesFound.join(', ')}`);
+    }
+    if (hasAppointmentInNote) {
+      console.log(`   📝 Appointment keywords found in order note`);
+    }
 
-    // Determine state from shipping/billing address
+    // Determine state from shipping/billing address (using standardized utility with geolocation fallback)
     const shippingAddress = order.shipping_address || null;
     const billingAddress = order.billing_address || null;
-    const detectedState = shippingAddress?.province_code || shippingAddress?.province || shippingAddress?.state || 
-                         billingAddress?.province_code || billingAddress?.province || billingAddress?.state || 
-                         'CA';
-    const state = detectedState.toUpperCase();
+    const detectedState = await determineState({ shipping_address: shippingAddress, billing_address: billingAddress }, { order, req });
+    const state = detectedState || 'CA'; // Default to CA if not found
     
-    console.log(`🌍 [STEP 4] [ORDER CREATED] State detection - Detected: "${detectedState}" (normalized: ${state}), Available states: ${Object.keys(require('../config/providerMapping')).join(', ')}`);
+    console.log(`🌍 [STEP 4] [ORDER CREATED] State detection - Detected: "${detectedState || 'none'}" (normalized: ${state}), Available states: ${Object.keys(require('../config/providerMapping')).join(', ')}`);
     
     const providerMapping = require('../config/providerMapping');
     const mapping = providerMapping[state] || providerMapping['CA'] || {};
@@ -1031,6 +988,18 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     try {
       if (shopifyCustomerId || resolvedEmail) {
         await customerPatientMapService.upsert(shopifyCustomerId, resolvedEmail, tebraPatientId);
+        
+        // If this is a guest order that now has a customerId (guest created account), link questionnaire completions
+        if (shopifyCustomerId && resolvedEmail) {
+          try {
+            const linkedCount = await questionnaireCompletionService.linkToCustomer(resolvedEmail, shopifyCustomerId);
+            if (linkedCount > 0) {
+              console.log(`✅ [ORDER CREATED] Linked ${linkedCount} guest questionnaire completion(s) to customer ${shopifyCustomerId}`);
+            }
+          } catch (linkErr) {
+            console.warn('[ORDER CREATED] Failed to link guest questionnaire completions (non-critical):', linkErr?.message || linkErr);
+          }
+        }
       }
     } catch (e) {
       console.warn('[ORDER CREATED] Failed to upsert customer-patient mapping:', e?.message || e);
@@ -1039,27 +1008,25 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     console.log(`📋 [STEP 5] [ORDER CREATED] Starting appointment extraction for order ${shopifyOrderId}, Patient ID: ${tebraPatientId}`);
 
     // Extract appointment details from order
-    // Cowlendar stores booking info in:
-    // 1. Order line item properties (appointment_date, start_time, booking_time, duration, etc.)
-    // 2. Order notes (may contain appointment details or meeting links)
-    // 3. Order metafields (if configured)
+    // Appointment booking info is stored in:
+    // 1. Order line item properties (appointment_date, start_time, booking_time, etc.)
+    // 2. Order notes (may contain appointment details as ISO datetime strings)
     let appointmentStartTime = order.created_at ? new Date(order.created_at) : new Date();
-    let appointmentDuration = 30; // Default 30 minutes
+    // Always enforce 30-minute appointment duration
+    const appointmentDuration = 30; // Always exactly 30 minutes
 
-    const bookingMeta = extractCowlendarBookingMeta(order, lineItems);
+    const bookingMeta = extractAppointmentBookingMeta(order, lineItems);
     if (bookingMeta.best) {
       const b = bookingMeta.best;
       if (b.startDate && !isNaN(b.startDate.getTime())) {
         appointmentStartTime = b.startDate;
       }
-      if (b.durationMin && Number.isFinite(b.durationMin) && b.durationMin > 0) {
-        appointmentDuration = b.durationMin;
-      }
+      // appointmentDuration always 30 minutes (enforced above)
       console.log('🕒 [ORDER CREATED] Booking time extraction (best match)', {
         orderId: shopifyOrderId,
         itemTitle: b.itemTitle,
         startISO: appointmentStartTime.toISOString(),
-        durationMin: appointmentDuration,
+        durationMin: 30, // Always 30 minutes
         source: b.startSource,
         tz: b.tz,
         usedParts: b.usedParts,
@@ -1080,7 +1047,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     if (appointmentStartTime.getTime() === (order.created_at ? new Date(order.created_at).getTime() : appointmentStartTime.getTime())) {
       const noteMatch = order.note?.match(/(?:appointment|booking|scheduled).*?(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+\-]\d{2}:?\d{2})?)/i);
       if (noteMatch) {
-        const parsed = parseCowlendarDateTime(noteMatch[1], null);
+        const parsed = parseAppointmentDateTime(noteMatch[1], null);
         if (parsed && !isNaN(parsed.getTime())) {
           appointmentStartTime = parsed;
           console.log(`📅 [ORDER CREATED] Extracted appointment time from order note: ${appointmentStartTime.toISOString()}`);
@@ -1088,8 +1055,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       }
     }
 
-    // Meeting link policy: do NOT forward Cowlendar links from Shopify → backend → Tebra.
-    // We only surface a "Join" link if Tebra explicitly returns one on the appointment.
+    // Meeting link policy: We only surface a "Join" link if Tebra explicitly returns one on the appointment.
     const meetingLink = null;
 
     // Create appointment in Tebra
@@ -1105,7 +1071,7 @@ exports.handleShopifyOrderCreated = async (req, res) => {
       // Only include providerId if explicitly set - Tebra will use practice default if omitted
       ...(mapping.defaultProviderId && { providerId: mapping.defaultProviderId }),
       // Keep notes link-free. This is an audit trail only.
-      notes: `Cowlendar booking from order ${shopifyOrderId}.`,
+      notes: `Appointment booking from order ${shopifyOrderId}.`,
       isRecurring: false
     };
 
@@ -1161,7 +1127,6 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     }
 
     // Verify whether Tebra provides an explicit meeting link on the created appointment.
-    // (We do not store/forward Cowlendar links; only use this if Tebra returns MeetingLink.)
     let tebraMeetingLink = null;
     if (tebraAppointmentId) {
       try {
@@ -1174,20 +1139,36 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     }
     
     console.log(`✅ [STEP 8] [ORDER CREATED] Appointment verification - Order: ${shopifyOrderId}, Tebra Appointment ID: ${tebraAppointmentId || 'N/A'}, Patient ID: ${tebraPatientId}, Tebra Meeting Link: ${tebraMeetingLink || 'None'}`);
-    console.log(`📧 [STEP 7] [ORDER CREATED] Sending success response to Shopify webhook - Customer will receive confirmation from Cowlendar`);
+    console.log(`📧 [STEP 7] [ORDER CREATED] Sending success response to Shopify webhook`);
 
     res.json({
       success: true,
       tebraAppointmentId: tebraAppointmentId || null,
       meetingLink: null,
       patientId: tebraPatientId,
-      message: tebraAppointmentId ? 'Cowlendar booking synced to Tebra successfully' : 'Cowlendar booking processed but appointment ID not available'
+      message: tebraAppointmentId ? 'Appointment booking synced to Tebra successfully' : 'Appointment booking processed but appointment ID not available'
     });
   } catch (error) {
     console.error('[ORDER CREATED] Error:', error);
-    res.status(500).json({ 
+    
+    // Store failed webhook for retry
+    try {
+      await webhookRetryService.storeFailedWebhook({
+        webhookType: 'shopify_order_created',
+        webhookUrl: '/webhooks/shopify/orders/created',
+        payload: req.body,
+        headers: req.headers,
+        error: error
+      });
+    } catch (retryError) {
+      console.error('[ORDER CREATED] Failed to store webhook for retry:', retryError);
+    }
+    
+    // Return 200 to prevent Shopify from retrying immediately
+    // Our retry service will handle retries
+    res.status(200).json({ 
       success: false, 
-      message: 'Internal error', 
+      message: 'Order processing failed, will retry',
       error: error.message 
     });
   }

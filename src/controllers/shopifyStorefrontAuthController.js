@@ -333,6 +333,22 @@ class ShopifyStorefrontAuthController {
       // Stop logging JWT fragments; just log success
       console.log(`✅ [SHOPIFY LOGIN] Successful login for ${customer.email}`);
 
+      // Generate refresh token for persistent sessions
+      let refreshToken = null;
+      try {
+        const authService = require('../services/authService');
+        const deviceInfo = req.headers['user-agent'] || 'unknown';
+        refreshToken = await authService.storeRefreshToken({
+          userId: String(customer.id),
+          userType: 'shopify_customer',
+          deviceInfo,
+          ipAddress: req.ip || req.connection?.remoteAddress
+        });
+        console.log(`✅ [SHOPIFY LOGIN] Refresh token generated for ${customer.email}`);
+      } catch (refreshErr) {
+        console.warn('[SHOPIFY LOGIN] Failed to generate refresh token (non-critical):', refreshErr?.message || refreshErr);
+      }
+
       // Ensure mapping with Tebra patient id using PostgreSQL mapping table
       let tebraPatientId = null;
       try {
@@ -389,6 +405,7 @@ class ShopifyStorefrontAuthController {
         success: true,
         message: 'Login successful',
         token: jwtToken,
+        refreshToken: refreshToken,
         customer: {
           id: customer.id,
           email: customer.email,
@@ -423,10 +440,21 @@ class ShopifyStorefrontAuthController {
 
       console.log(`📝 [SHOPIFY REGISTER] Registration attempt from ${getFormattedLocation(clientLocation)}`);
 
+      // Validate required fields - first name, last name, and email are mandatory
       if (!email || !password || !firstName || !lastName) {
         return res.status(400).json({
           success: false,
           message: 'Email, password, first name, and last name are required',
+          location: clientLocation
+        });
+      }
+
+      // State is required for Tebra patient creation
+      const patientState = state || clientLocation?.state || 'CA';
+      if (!patientState) {
+        return res.status(400).json({
+          success: false,
+          message: 'State is required for patient registration',
           location: clientLocation
         });
       }
@@ -500,37 +528,144 @@ class ShopifyStorefrontAuthController {
 
       console.log(`✅ [SHOPIFY REGISTER] Successful registration for ${customer.email}`);
 
+      // Check if guest data exists (questionnaire completions, patient records)
+      let existingPatientId = null;
+      try {
+        const customerPatientMapService = require('../services/customerPatientMapService');
+        const existingMapping = await customerPatientMapService.getByShopifyIdOrEmail(null, customer.email);
+        if (existingMapping && existingMapping.tebra_patient_id) {
+          existingPatientId = existingMapping.tebra_patient_id;
+          console.log(`✅ [STOREFRONT REGISTER] Found existing patient record for guest: ${existingPatientId}`);
+        }
+      } catch (mappingErr) {
+        console.warn('[STOREFRONT REGISTER] Failed to check for existing guest data:', mappingErr?.message || mappingErr);
+      }
+
       // Attempt to create/link a Tebra patient chart for this customer (best-effort)
       let tebraPatientId = null;
       try {
         // Build minimal demographics for Tebra from Shopify data
         const tebraService = require('../services/tebraService');
-        const patientPayload = {
-          email: customer.email,
-          firstName: customer.firstName,
-          lastName: customer.lastName,
-          phone: customer.phone,
-          state: state || customer?.defaultAddress?.province || undefined,
-        };
-        const tebraResp = await tebraService.createPatient(patientPayload);
-        if (tebraResp && tebraResp.id) {
-          tebraPatientId = tebraResp.id;
+        const customerPatientMapService = require('../services/customerPatientMapService');
+        
+        if (existingPatientId) {
+          // Use existing patient
+          tebraPatientId = existingPatientId;
+          console.log(`✅ [STOREFRONT REGISTER] Using existing Tebra patient: ${tebraPatientId}`);
+        } else {
+          // Create new patient in Tebra using registration data
+          const patientPayload = {
+            email: email, // Use email from request (customer.email might not be set yet)
+            firstName: firstName, // Use firstName from request
+            lastName: lastName, // Use lastName from request
+            phone: phone || customer.phone || '',
+            state: patientState, // Use state from request or location
+          };
+          
+          console.log(`📝 [STOREFRONT REGISTER] Creating Tebra patient with:`, {
+            email: patientPayload.email,
+            firstName: patientPayload.firstName,
+            lastName: patientPayload.lastName,
+            state: patientPayload.state
+          });
+          
+          const tebraResp = await tebraService.createPatient(patientPayload);
+          if (tebraResp && tebraResp.id) {
+            tebraPatientId = tebraResp.id;
+            console.log(`✅ [STOREFRONT REGISTER] Created new Tebra patient: ${tebraPatientId}`);
+          } else {
+            console.warn(`⚠️ [STOREFRONT REGISTER] Tebra patient creation returned no ID:`, tebraResp);
+          }
+        }
+        
+        // Store/update customer-patient mapping
+        if (tebraPatientId) {
+          await customerPatientMapService.upsert(customer.id, customer.email, tebraPatientId);
         }
       } catch (e) {
-        console.warn('Tebra createPatient (Shopify register) failed:', e?.message || e);
+        console.warn('[STOREFRONT REGISTER] Tebra patient creation/update failed:', e?.message || e);
+      }
+
+      // Link guest data to customer account (questionnaire completions, etc.)
+      try {
+        const guestAccountLinkingService = require('../services/guestAccountLinkingService');
+        const linkingResults = await guestAccountLinkingService.linkGuestToCustomer(customer.email, customer.id);
+        console.log(`✅ [STOREFRONT REGISTER] Linked guest data: ${linkingResults.questionnaireCompletionsLinked} completions, ${linkingResults.patientMappingsUpdated} mappings`);
+        if (linkingResults.errors.length > 0) {
+          console.warn('[STOREFRONT REGISTER] Guest linking had errors:', linkingResults.errors);
+        }
+      } catch (linkingErr) {
+        console.warn('[STOREFRONT REGISTER] Failed to link guest data (non-critical):', linkingErr?.message || linkingErr);
+        // Don't fail registration if linking fails
+      }
+
+      // Create and send email verification token
+      let verificationSent = false;
+      try {
+        const emailVerificationService = require('../services/emailVerificationService');
+        const { token } = await emailVerificationService.createVerificationToken(customer.email, customer.id);
+        await emailVerificationService.sendVerificationEmail(customer.email, token, firstName);
+        verificationSent = true;
+        console.log(`✅ [STOREFRONT REGISTER] Verification email sent to ${customer.email}`);
+      } catch (verificationErr) {
+        console.warn('[STOREFRONT REGISTER] Failed to send verification email (non-critical):', verificationErr?.message || verificationErr);
+        // Don't fail registration if verification email fails
+      }
+
+      // Get customer access token for immediate login
+      // Note: User should verify email before full access, but we allow login
+      let customerAccessToken = null;
+      try {
+        const loginVariables = {
+          input: {
+            email,
+            password
+          }
+        };
+        const loginData = await this.makeGraphQLRequest(queries.CUSTOMER_ACCESS_TOKEN_CREATE, loginVariables);
+        if (loginData.customerAccessTokenCreate.customerAccessToken) {
+          customerAccessToken = loginData.customerAccessTokenCreate.customerAccessToken.accessToken;
+          console.log(`✅ [STOREFRONT REGISTER] Generated access token for immediate login`);
+        }
+      } catch (tokenErr) {
+        console.warn('[STOREFRONT REGISTER] Failed to generate access token (non-critical):', tokenErr?.message || tokenErr);
+      }
+
+      // Generate refresh token if customerAccessToken is available
+      let refreshToken = null;
+      if (customerAccessToken && customer.id) {
+        try {
+          const authService = require('../services/authService');
+          const deviceInfo = req.headers['user-agent'] || 'unknown';
+          refreshToken = await authService.storeRefreshToken({
+            userId: String(customer.id),
+            userType: 'shopify_customer',
+            deviceInfo,
+            ipAddress: req.ip || req.connection?.remoteAddress
+          });
+        } catch (refreshErr) {
+          console.warn('[STOREFRONT REGISTER] Failed to generate refresh token (non-critical):', refreshErr?.message || refreshErr);
+        }
       }
 
       res.status(201).json({
         success: true,
-        message: 'Registration successful',
+        message: verificationSent 
+          ? 'Registration successful. Please check your email to verify your account.' 
+          : 'Registration successful',
         customer: {
           id: customer.id,
           email: customer.email,
           firstName: customer.firstName,
           lastName: customer.lastName,
           phone: customer.phone,
-          role: 'customer'
+          role: 'customer',
+          emailVerified: false
         },
+        customerAccessToken: customerAccessToken,
+        refreshToken: refreshToken,
+        tebraPatientId: tebraPatientId,
+        emailVerificationSent: verificationSent,
         location: clientLocation
       });
 

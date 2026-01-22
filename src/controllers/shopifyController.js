@@ -163,17 +163,12 @@ async function createDraftOrder(customerId, appointmentData, quizResult) {
   }
 }
 
-// Helper function to determine state from customer data
+// Helper function to determine state from customer data (uses standardized utility)
+const { determineStateSync } = require('../utils/stateUtils');
+
 function determineState(customerData) {
-  return (
-    customerData.state ||
-    customerData.shippingState ||
-    customerData.billingState ||
-    (customerData.address && customerData.address.state) ||
-    (customerData.shipping_address && customerData.shipping_address.provinceCode) ||
-    (customerData.billing_address && customerData.billing_address.provinceCode) ||
-    'CA' // Default to California if no state found
-  );
+  const state = determineStateSync(customerData);
+  return state || 'CA'; // Default to California if no state found
 }
 
 // Helper function to build patient payload for Tebra
@@ -208,12 +203,8 @@ function buildPatientPayload(customerData, mapping) {
  * - Direct API calls from frontend
  * - Custom integration flows
  * 
- * NOTE: The PRIMARY Cowlendar integration method is through Shopify Order Created webhook
- * (see billingController.handleShopifyOrderCreated). This endpoint is for alternative
- * integration methods or direct booking requests.
- * 
- * Cowlendar can generate Google Meet/Zoom links automatically (Elite plan and above).
- * The backend will use Cowlendar-provided links if available in the appointment data.
+ * This endpoint handles direct appointment booking requests from Shopify.
+ * Appointments are created directly in Tebra (30 minutes duration).
  */
 exports.handleShopifyAppointment = async (req, res) => {
   try {
@@ -263,7 +254,7 @@ exports.handleShopifyAppointment = async (req, res) => {
       await addCustomerMetafields(shopifyCustomer.id, quiz_result);
     }
 
-    // Create draft order with the Cowlendar product
+    // Create draft order for the appointment
     const draftOrder = await createDraftOrder(shopifyCustomer.id, appointment, quiz_result);
 
     // Create or update patient in Tebra (for medical records)
@@ -297,13 +288,13 @@ exports.handleShopifyAppointment = async (req, res) => {
       if (!patientId) {
         const created = await tebraService.createPatient(patientPayload);
         patientId = created.id || created.PatientID || created.patientId;
-        console.log(`✅ [COWLENDAR] Created new patient in Tebra: ${patientId}`);
+        console.log(`✅ [SHOPIFY APPOINTMENT] Created new patient in Tebra: ${patientId}`);
       } else {
         await tebraService.updatePatient(patientId, { 
           EmailAddress: patientPayload.email, 
           MobilePhone: patientPayload.mobilePhone 
         });
-        console.log(`✅ [COWLENDAR] Updated existing patient in Tebra: ${patientId}`);
+        console.log(`✅ [SHOPIFY APPOINTMENT] Updated existing patient in Tebra: ${patientId}`);
       }
 
       // Store customer-patient mapping
@@ -324,40 +315,28 @@ exports.handleShopifyAppointment = async (req, res) => {
           documentDate: new Date().toISOString(),
           status: 'Completed',
           label: 'Consultation',
-          notes: 'Submitted via Cowlendar appointment booking',
+          notes: 'Submitted via appointment booking',
           patientId,
           practiceId: mapping.practiceId,
           fileContent: Buffer.from(JSON.stringify(quiz_result)).toString('base64'),
         };
         await tebraService.createDocument(documentData);
-        console.log(`✅ [COWLENDAR] Stored questionnaire in patient chart`);
+        console.log(`✅ [SHOPIFY APPOINTMENT] Stored questionnaire in patient chart`);
       }
 
       // Create appointment in Tebra with telemedicine link
       if (appointment && appointment.start_time && patientId) {
         try {
           const startTime = new Date(appointment.start_time);
-          const endTime = new Date(startTime.getTime() + (appointment.duration || 30) * 60000); // Default 30 min
+          const endTime = new Date(startTime.getTime() + 30 * 60000); // Always exactly 30 minutes
           
-          // Use meeting link from Cowlendar if available (Cowlendar can generate Google Meet/Zoom links)
-          const cowlendarMeetingLink = 
-            appointment.meeting_link || 
-            appointment.meetingLink || 
-            appointment.video_url || 
-            appointment.videoUrl || 
-            appointment.google_meet_link || 
-            appointment.googleMeetLink ||
-            appointment.zoom_link ||
-            appointment.zoomLink ||
-            null;
-
-          // Only generate our own link if Cowlendar didn't provide one (and if generation is enabled)
-          let meetingLink = cowlendarMeetingLink;
-          if (!meetingLink) {
+          // Generate meeting link if enabled (currently disabled)
+          let meetingLink = null;
+          if (false) { // Meeting link generation disabled
             const meetingDetails = googleMeetService.generateMeetLink({
               patientName: `${customer.firstName || ''} ${customer.lastName || ''}`.trim() || customer.email,
               doctorName: 'Medical Director',
-              appointmentId: `COWLENDAR-${Date.now()}`,
+              appointmentId: `APPT-${Date.now()}`,
               scheduledTime: startTime.toISOString()
             });
             meetingLink = meetingDetails ? meetingDetails.meetLink : null;
@@ -372,12 +351,12 @@ exports.handleShopifyAppointment = async (req, res) => {
             patientId,
             practiceId: mapping.practiceId,
             providerId: mapping.defaultProviderId,
-            notes: meetingLink ? `Cowlendar appointment. Meeting link: ${meetingLink}` : 'Cowlendar appointment.',
+            notes: meetingLink ? `Appointment booking. Meeting link: ${meetingLink}` : 'Appointment booking.',
             isRecurring: false
           };
 
           const tebraAppointment = await tebraService.createAppointment(appointmentData);
-          console.log(`✅ [COWLENDAR] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
+          console.log(`✅ [SHOPIFY APPOINTMENT] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
 
           // Store meeting link for response (if available)
           appointment.tebraAppointmentId = tebraAppointment.id || tebraAppointment.ID;

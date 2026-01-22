@@ -7,6 +7,7 @@ const { auth, optionalAuth } = require('../middleware/shopifyTokenAuth');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
 const tebraService = require('../services/tebraService');
+const questionnaireCompletionService = require('../services/questionnaireCompletionService');
 const axios = require('axios');
 
 // Shopify Admin API configuration
@@ -161,9 +162,34 @@ router.post('/checkout/validate', auth, async (req, res) => {
       
       // Check if questionnaire required
       if (productUtils.requiresQuestionnaire(product)) {
+        // Get email from shipping address or customer
+        const email = shippingAddress?.email || 
+                      req.body.email || 
+                      (customerId ? (await shopifyUserService.getCustomer(customerId).catch(() => null))?.email : null) ||
+                      getPropValue(item?.properties || item?.line_item_properties, ['Email', 'email']);
+        
+        // Server-side validation using questionnaire completion registry
+        let isValidCompletion = false;
+        if (email) {
+          try {
+            isValidCompletion = await questionnaireCompletionService.validateForCheckout({
+              email: email,
+              customerId: customerId || null,
+              productId: productId
+            });
+          } catch (validationErr) {
+            console.warn(`[CHECKOUT VALIDATION] Questionnaire validation error for product ${productId}:`, validationErr?.message || validationErr);
+            // Fall back to legacy validation if registry check fails
+          }
+        }
+        
+        // Legacy validation (for backward compatibility)
         const props = item?.properties || item?.line_item_properties || null;
         const itemHasProof = normalizeBool(getPropValue(props, ['_questionnaire_completed', 'questionnaire_completed', 'questionnaireCompleted']));
-        if (questionnaireStatus !== 'completed' && !requestHasQuestionnaireProof && !itemHasProof) {
+        const legacyValid = questionnaireStatus === 'completed' || requestHasQuestionnaireProof || itemHasProof;
+        
+        // Require either server-side validation OR legacy proof
+        if (!isValidCompletion && !legacyValid) {
           return res.status(400).json({
             error: 'QUESTIONNAIRE_REQUIRED',
             message: 'Please complete the medical questionnaire before purchasing this product',
@@ -307,7 +333,9 @@ router.get('/products/:productId', auth, async (req, res) => {
  * Get patient medical chart (patient info, questionnaire, documents, prescriptions, appointments) from Tebra
  * Note: Auth is optional - if no token provided, we'll still try to fetch data (for customer account pages)
  */
-router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
+const { cacheStrategies } = require('../middleware/cacheHeaders');
+
+router.get('/customers/:customerId/chart', optionalAuth, cacheStrategies.private(300), async (req, res) => {
   try {
     const { customerId } = req.params;
     console.log(`📋 [CHART] Request for customer ${customerId}`, {
@@ -315,6 +343,16 @@ router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
       authType: req.user?.authType || 'none',
       customerIdFromAuth: req.user?.shopifyCustomerId || req.user?.id || null
     });
+    
+    // Check cache for chart data
+    const cacheService = require('../services/cacheService');
+    const cacheKey = cacheService.generateKey('chart', { customerId });
+    const cachedChart = await cacheService.get(cacheKey);
+    if (cachedChart) {
+      console.log(`✅ [CHART] Returning cached chart data for customer ${customerId}`);
+      return res.json(cachedChart);
+    }
+    
     const customerPatientMapService = require('../services/customerPatientMapService');
     
     // Get customer email for lookup
@@ -441,7 +479,7 @@ router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
       console.warn('[CHART] Failed to fetch appointments:', e?.message || e);
     }
     
-    res.json({
+    const chartData = {
       patientId: tebraPatientId,
       patient: patient ? {
         firstName: patient.firstName || patient.FirstName,
@@ -458,7 +496,12 @@ router.get('/customers/:customerId/chart', optionalAuth, async (req, res) => {
       totalDocuments: documents.length,
       totalPrescriptions: prescriptions.length,
       totalAppointments: appointments.length
-    });
+    };
+    
+    // Cache chart data for 5 minutes (300 seconds)
+    await cacheService.set(cacheKey, chartData, 300);
+    
+    res.json(chartData);
   } catch (error) {
     console.error('[CHART] Error:', error);
     res.status(500).json({ 

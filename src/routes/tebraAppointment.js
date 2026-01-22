@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const tebraAppointmentController = require('../controllers/tebraAppointmentController');
 const { auth } = require('../middleware/shopifyTokenAuth');
+const { cacheStrategies } = require('../middleware/cacheHeaders');
 
 // Get availability slots
 router.post('/get-availability', auth, tebraAppointmentController.getAvailability);
@@ -56,7 +57,7 @@ router.post('/book', auth, express.json({ limit: '1mb' }), async (req, res, next
 });
 
 // Search appointments
-router.post('/search', auth, tebraAppointmentController.searchAppointments);
+router.post('/search', auth, cacheStrategies.short(), tebraAppointmentController.searchAppointments);
 
 // Get appointment by ID
 router.get('/:appointmentId', auth, tebraAppointmentController.getAppointment);

@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
 const dotenv = require('dotenv');
 const geolocationMiddleware = require('./middleware/geolocation');
 const requestId = require('./middleware/requestId');
@@ -62,7 +63,7 @@ const corsOptions = {
     if (!origin) return cb(null, true); // allow non-browser or same-origin
 
     const normalized = normalizeOrigin(origin) || origin;
-    // If no allowlist is configured, allow all (useful for local/ngrok dev).
+    // If no allowlist is configured, allow all (useful for local development).
     if (allowedOrigins.size === 0) return cb(null, true);
 
     if (allowedOrigins.has(normalized)) return cb(null, true);
@@ -79,7 +80,7 @@ const corsOptions = {
     return cb(new Error('CORS: origin not allowed'));
   },
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token', 'ngrok-skip-browser-warning'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token', 'X-CSRF-Token'],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 };
 
@@ -88,16 +89,76 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(requestId);
 app.use(helmet());
+// Performance monitoring middleware
+const { performanceMonitor, getPerformanceMetrics } = require('./middleware/performanceMonitor');
+app.use(performanceMonitor);
+
+// Performance metrics endpoint
+app.get('/api/metrics', (req, res) => {
+  getPerformanceMetrics(req, res);
+});
+
+// Initialize error tracking (Sentry)
+const errorTracking = require('./utils/errorTracking');
+errorTracking.initialize();
+// Response compression (gzip) - compress responses > 1KB
+app.use(compression({
+  level: 6, // Compression level (0-9, 6 is a good balance)
+  threshold: 1024, // Only compress responses > 1KB
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all other responses
+    return compression.filter(req, res);
+  }
+}));
 app.use(morgan(':method :url :status :res[content-length] - :response-time ms reqId=:req[id]'));
-app.use(express.json());
+// Global JSON parser with default limit (can be overridden per route)
+app.use(express.json({ limit: '1mb' }));
 app.use(geolocationMiddleware);
+
+// CSRF protection (generate tokens for all requests, protect state-changing methods)
+const { csrfTokenGenerator, csrfProtection, getCSRFToken } = require('./middleware/csrf');
+const cookieParser = require('cookie-parser');
+app.use(cookieParser());
+
+// Generate CSRF tokens for all requests
+app.use(csrfTokenGenerator());
+
+// Apply CSRF protection to state-changing methods (exclude webhooks and public endpoints)
+app.use(csrfProtection({
+  requireToken: process.env.CSRF_REQUIRED !== 'false', // Can be disabled via env var
+  excludedMethods: ['GET', 'HEAD', 'OPTIONS'],
+  excludedPaths: [
+    '/webhooks',
+    '/api/webhooks',
+    '/health',
+    '/api/health',
+    '/api/public',
+    '/api/csrf-token' // Token endpoint itself
+  ]
+}));
+
+// CSRF token endpoint
+app.get('/api/csrf-token', getCSRFToken);
+
+// API Documentation (Swagger)
+const { swaggerSpec, swaggerUi } = require('./swagger');
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'SXRX API Documentation'
+}));
 
 // Routes
 app.use('/api/shopify', require('./routes/shopifyRegistration'));
 app.use('/api/shopify', require('./routes/shopify'));
 app.use('/api/auth', require('./routes/shopifyAuth'));
 app.use('/api/shopify-storefront', require('./routes/shopifyStorefrontAuth'));
+app.use('/api/admin', require('./routes/admin'));
 app.use('/api/tebra', require('./routes/tebra'));
+app.use('/api/availability', require('./routes/availability'));
 app.use('/api/tebra-patient', require('./routes/tebraPatient'));
 app.use('/api/tebra-appointment', require('./routes/tebraAppointment'));
 app.use('/api/tebra-provider', require('./routes/tebraProvider'));
@@ -110,6 +171,9 @@ app.use('/api/geolocation', require('./routes/geolocation'));
 app.use('/api/billing', require('./routes/billing'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/new-patient', require('./routes/newPatientForm'));
+app.use('/api/appointments', require('./routes/appointments'));
+app.use('/api/email-verification', require('./routes/emailVerification'));
+app.use('/api/2fa', require('./routes/twoFactorAuth'));
 app.use('/webhooks', require('./routes/webhooks'));
 // Development-only test routes (only available in dev mode)
 if (process.env.NODE_ENV !== 'production') {
@@ -118,6 +182,107 @@ if (process.env.NODE_ENV !== 'production') {
 // Cache database module for health check
 const dbModule = require('./db/pg');
 
+// Run database migrations on startup
+(async () => {
+  try {
+    const { runMigrations } = require('./db/migrate');
+    await runMigrations();
+  } catch (error) {
+    console.error('[STARTUP] Migration failed:', error);
+    // Don't crash the server, but log the error
+  }
+})();
+
+// Graceful shutdown - close job queues
+process.on('SIGTERM', async () => {
+  logger.info('[SHUTDOWN] SIGTERM received, closing job queues...');
+  try {
+    const jobQueueService = require('./services/jobQueue');
+    await jobQueueService.close();
+  } catch (error) {
+    logger.error('[SHUTDOWN] Error closing job queues', { error: error.message });
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('[SHUTDOWN] SIGINT received, closing job queues...');
+  try {
+    const jobQueueService = require('./services/jobQueue');
+    await jobQueueService.close();
+  } catch (error) {
+    logger.error('[SHUTDOWN] Error closing job queues', { error: error.message });
+  }
+  process.exit(0);
+});
+
+// Global error handler (must be last)
+app.use((error, req, res, next) => {
+  errorTracking.errorHandler(error, req, res, next);
+  
+  // Send error response
+  const statusCode = error.statusCode || error.status || 500;
+  const message = error.message || 'Internal server error';
+  
+  res.status(statusCode).json({
+    success: false,
+    error: message,
+    ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+  });
+});
+
+// Unhandled promise rejection handler
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('[UNHANDLED_REJECTION] Unhandled promise rejection', {
+    reason: reason?.message || reason,
+    stack: reason?.stack
+  });
+  errorTracking.captureException(reason instanceof Error ? reason : new Error(String(reason)), {
+    tags: { type: 'unhandled_rejection' }
+  });
+});
+
+// Uncaught exception handler
+process.on('uncaughtException', (error) => {
+  logger.error('[UNCAUGHT_EXCEPTION] Uncaught exception', {
+    error: error.message,
+    stack: error.stack
+  });
+  errorTracking.captureException(error, {
+    tags: { type: 'uncaught_exception' }
+  });
+  // Exit after logging
+  setTimeout(() => process.exit(1), 1000);
+});
+
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Health check endpoint
+ *     tags: [Health]
+ *     responses:
+ *       200:
+ *         description: Service is healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *                 database:
+ *                   type: string
+ *                   example: connected
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 uptime:
+ *                   type: number
+ *       503:
+ *         description: Service is degraded
+ */
 // Health check endpoint
 app.get('/health', async (req, res) => {
   const health = {
@@ -126,20 +291,136 @@ app.get('/health', async (req, res) => {
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || 'development',
     version: APP_VERSION,
+    checks: {}
   };
+
+  let allHealthy = true;
 
   // Check database connection
   try {
     await dbModule.query('SELECT 1');
-    health.database = 'connected';
+    health.checks.database = { status: 'healthy', message: 'connected' };
   } catch (error) {
-    health.database = 'disconnected';
+    health.checks.database = { status: 'unhealthy', message: 'disconnected', error: error.message };
     health.status = 'degraded';
+    allHealthy = false;
     logger.warn('Health check: Database disconnected', { error: error.message });
+  }
+
+  // Check Redis connectivity
+  try {
+    const cacheService = require('./services/cacheService');
+    if (cacheService.enabled && cacheService.client) {
+      try {
+        await cacheService.client.ping();
+        health.checks.redis = { status: 'healthy', message: 'connected' };
+      } catch (redisError) {
+        health.checks.redis = { status: 'unhealthy', message: 'disconnected', error: redisError.message };
+        health.status = 'degraded';
+        allHealthy = false;
+        logger.warn('Health check: Redis disconnected', { error: redisError.message });
+      }
+    } else {
+      health.checks.redis = { status: 'disabled', message: 'Redis caching is disabled' };
+    }
+  } catch (error) {
+    health.checks.redis = { status: 'error', message: 'Failed to check Redis', error: error.message };
+    health.status = 'degraded';
+    allHealthy = false;
+  }
+
+  // Check Tebra API connectivity
+  try {
+    const tebraService = require('./services/tebraService');
+    const connectionTest = await Promise.race([
+      tebraService.testConnection(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+    ]);
+    if (connectionTest && connectionTest.success) {
+      health.checks.tebra = { status: 'healthy', message: 'connected', mode: connectionTest.mode };
+    } else {
+      health.checks.tebra = { status: 'unhealthy', message: 'connection test failed' };
+      health.status = 'degraded';
+      allHealthy = false;
+    }
+  } catch (error) {
+    health.checks.tebra = { status: 'unhealthy', message: 'connection failed', error: error.message };
+    health.status = 'degraded';
+    allHealthy = false;
+    logger.warn('Health check: Tebra API disconnected', { error: error.message });
+  }
+
+  // Check Shopify API connectivity (optional, non-blocking)
+  try {
+    if (process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_ACCESS_TOKEN) {
+      const axios = require('axios');
+      const shopifyUrl = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/shop.json`;
+      const shopifyResponse = await Promise.race([
+        axios.get(shopifyUrl, {
+          headers: {
+            'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN
+          },
+          timeout: 3000
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+      ]);
+      if (shopifyResponse && shopifyResponse.status === 200) {
+        health.checks.shopify = { status: 'healthy', message: 'connected' };
+      } else {
+        health.checks.shopify = { status: 'unhealthy', message: 'API call failed' };
+      }
+    } else {
+      health.checks.shopify = { status: 'not_configured', message: 'Shopify credentials not configured' };
+    }
+  } catch (error) {
+    health.checks.shopify = { status: 'unhealthy', message: 'connection failed', error: error.message };
+    // Shopify check failure doesn't degrade overall status (non-critical)
+    logger.warn('Health check: Shopify API check failed', { error: error.message });
   }
 
   const statusCode = health.status === 'ok' ? 200 : 503;
   res.status(statusCode).json(health);
+});
+
+// Webhook retry processor (runs every 5 minutes)
+const cron = require('node-cron');
+const webhookRetryService = require('./services/webhookRetryService');
+const billingController = require('./controllers/billingController');
+const revenueHuntWebhookController = require('./controllers/revenueHuntWebhookController');
+const appointmentReminderService = require('./services/appointmentReminderService');
+
+// Schedule webhook retry processing every 5 minutes
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    const handlers = {
+      'shopify_order_created': billingController.handleShopifyOrderCreated,
+      'shopify_order_paid': billingController.handleShopifyOrderPaid,
+      'revenuehunt': revenueHuntWebhookController.handleRevenueHunt
+    };
+    
+    await webhookRetryService.processPendingWebhooks(handlers);
+  } catch (error) {
+    console.error('[CRON] Webhook retry processing failed:', error);
+  }
+});
+
+// Schedule appointment reminders
+// 24-hour reminders (runs every hour, checks for appointments 24h from now)
+cron.schedule('0 * * * *', async () => {
+  try {
+    await appointmentReminderService.processReminders(24);
+  } catch (error) {
+    console.error('[CRON] 24h appointment reminder processing failed:', error);
+  }
+});
+
+// 2-hour reminders (runs every 15 minutes, checks for appointments 2h from now)
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    await appointmentReminderService.processReminders(2);
+  } catch (error) {
+    console.error('[CRON] 2h appointment reminder processing failed:', error);
+  }
 });
 
 // Base route
@@ -163,48 +444,9 @@ app.use((req, res) => {
   });
 });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  // Log error details
-  logger.errorWithContext(err, {
-    path: req.path,
-    method: req.method,
-    requestId: req.id,
-    status: err.status || err.statusCode || 500
-  });
-
-  // Determine status code
-  const statusCode = err.status || err.statusCode || 500;
-  
-  // Prepare error response
-  const errorResponse = {
-    success: false,
-    message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && {
-      stack: err.stack,
-      details: err.details
-    })
-  };
-
-  // Handle specific error types
-  if (err.name === 'ValidationError') {
-    return res.status(400).json({
-      ...errorResponse,
-      message: 'Validation error',
-      errors: err.errors
-    });
-  }
-
-  if (err.name === 'UnauthorizedError' || err.name === 'JsonWebTokenError') {
-    return res.status(401).json({
-      ...errorResponse,
-      message: 'Authentication failed'
-    });
-  }
-
-  // Default error response
-  res.status(statusCode).json(errorResponse);
-});
+// Error handling middleware (standardized)
+const { errorHandler } = require('./utils/errorHandler');
+app.use(errorHandler);
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
@@ -254,6 +496,54 @@ const server = app.listen(PORT, () => {
   } catch (e) {
     logger.warn('Failed to start monthly billing cron job', { error: e?.message || e });
   }
+  
+  // Start email verification cleanup cron job (daily at 2 AM)
+  try {
+    const cron = require('node-cron');
+    const emailVerificationService = require('./services/emailVerificationService');
+    
+    // Run daily at 2 AM to clean up expired verification tokens
+    cron.schedule('0 2 * * *', async () => {
+      try {
+        const result = await emailVerificationService.cleanupExpiredTokens();
+        logger.info('Email verification cleanup completed', { deleted: result.deleted });
+      } catch (error) {
+        logger.error('Email verification cleanup failed', { error: error.message });
+      }
+    });
+    
+    logger.info('Email verification cleanup cron job started');
+  } catch (e) {
+    logger.warn('Failed to start email verification cleanup cron job', { error: e?.message || e });
+  }
+  
+  // Start cache warming (on startup and periodically)
+  try {
+    const cacheWarmingService = require('./services/cacheWarmingService');
+    const cron = require('node-cron');
+    
+    // Warm cache on startup (after a short delay)
+    setTimeout(async () => {
+      try {
+        await cacheWarmingService.warmAll();
+      } catch (error) {
+        logger.warn('Cache warming on startup failed', { error: error?.message || error });
+      }
+    }, 10000); // 10 seconds after startup
+    
+    // Warm cache every 30 minutes
+    cron.schedule('*/30 * * * *', async () => {
+      try {
+        await cacheWarmingService.warmAll();
+      } catch (error) {
+        logger.error('Scheduled cache warming failed', { error: error.message });
+      }
+    });
+    
+    logger.info('Cache warming service started');
+  } catch (e) {
+    logger.warn('Failed to start cache warming service', { error: e?.message || e });
+  }
 });
 
 // Graceful shutdown
@@ -271,6 +561,13 @@ const gracefulShutdown = (signal) => {
       }
     } catch (error) {
       logger.warn('Error closing database connections', { error: error.message });
+    }
+    // Close Redis cache connection
+    try {
+      const cacheService = require('./services/cacheService');
+      await cacheService.close();
+    } catch (error) {
+      logger.warn('Error closing Redis connection', { error: error.message });
     }
     process.exit(0);
   });

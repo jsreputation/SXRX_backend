@@ -2,6 +2,8 @@
 const { getFormattedLocation } = require('../utils/locationUtils');
 const tebraService = require('../services/tebraService');
 const shopifyUserService = require('../services/shopifyUserService');
+const guestAccountLinkingService = require('../services/guestAccountLinkingService');
+const customerPatientMapService = require('../services/customerPatientMapService');
 
 
 // Main Shopify registration endpoint
@@ -52,17 +54,38 @@ exports.shopifyRegister = async (req, res) => {
       });
     }
 
-    // Create patient in Tebra
+    // Check if guest data exists (questionnaire completions, patient records)
+    let existingPatientId = null;
+    try {
+      const existingMapping = await customerPatientMapService.getByShopifyIdOrEmail(null, email);
+      if (existingMapping && existingMapping.tebra_patient_id) {
+        existingPatientId = existingMapping.tebra_patient_id;
+        console.log(`✅ [REGISTRATION] Found existing patient record for guest: ${existingPatientId}`);
+      }
+    } catch (mappingErr) {
+      console.warn('[REGISTRATION] Failed to check for existing guest data:', mappingErr?.message || mappingErr);
+    }
+
+    // Create patient in Tebra (or use existing if found)
     let tebraPatient = null;
     try {
-      const tebraData = await tebraService.createPatient({
-        firstName,
-        lastName,
-        email,
-        phone: phone || '',
-        state,
-        role: role || 'patient'
-      });
+      let tebraData;
+      if (existingPatientId) {
+        // Use existing patient
+        tebraData = { id: existingPatientId };
+        console.log(`✅ [REGISTRATION] Using existing Tebra patient: ${existingPatientId}`);
+      } else {
+        // Create new patient
+        tebraData = await tebraService.createPatient({
+          firstName,
+          lastName,
+          email,
+          phone: phone || '',
+          state,
+          role: role || 'patient'
+        });
+        console.log(`✅ [REGISTRATION] Created new Tebra patient: ${tebraData.id}`);
+      }
       
       // Update Shopify customer with Tebra patient ID
       await shopifyUserService.updateCustomerMetafields(shopifyCustomer.id, {
@@ -70,14 +93,17 @@ exports.shopifyRegister = async (req, res) => {
         tebra_sync_status: 'synced'
       });
       
+      // Store/update customer-patient mapping
+      await customerPatientMapService.upsert(shopifyCustomer.id, email, tebraData.id);
+      
       tebraPatient = {
         id: tebraData.id,
         syncStatus: 'synced',
-        syncDate: new Date().toISOString()
+        syncDate: new Date().toISOString(),
+        wasExisting: !!existingPatientId
       };
-      console.log(`✅ Tebra patient created: ${tebraData.id}`);
     } catch (tebraError) {
-      console.error('Tebra patient creation failed:', tebraError);
+      console.error('[REGISTRATION] Tebra patient creation/update failed:', tebraError);
       
       // Update Shopify customer with failed sync status
       await shopifyUserService.updateCustomerMetafields(shopifyCustomer.id, {
@@ -89,6 +115,18 @@ exports.shopifyRegister = async (req, res) => {
         error: tebraError.message
       };
       // Continue with registration even if Tebra fails
+    }
+
+    // Link guest data to customer account (questionnaire completions, etc.)
+    try {
+      const linkingResults = await guestAccountLinkingService.linkGuestToCustomer(email, shopifyCustomer.id);
+      console.log(`✅ [REGISTRATION] Linked guest data: ${linkingResults.questionnaireCompletionsLinked} completions, ${linkingResults.patientMappingsUpdated} mappings`);
+      if (linkingResults.errors.length > 0) {
+        console.warn('[REGISTRATION] Guest linking had errors:', linkingResults.errors);
+      }
+    } catch (linkingErr) {
+      console.warn('[REGISTRATION] Failed to link guest data (non-critical):', linkingErr?.message || linkingErr);
+      // Don't fail registration if linking fails
     }
 
     // Generate JWT token

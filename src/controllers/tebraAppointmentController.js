@@ -207,29 +207,41 @@ exports.createAppointment = async (req, res) => {
         // Append to notes (preserve existing notes)
         appointmentData.notes = appointmentData.notes ? `${appointmentData.notes}\nMeeting Link: ${meetingLink}` : `Meeting Link: ${meetingLink}`;
 
-        // Attempt to email the meeting link to patient if email present
+        // Queue email sending as background job
         const patientEmail = (appointmentData.patientEmail || appointmentData.patientSummary?.Email || appointmentData.PatientEmail);
         if (patientEmail) {
           try {
-            // Prefer SendGrid when API key present
-            const sgKey = process.env.SENDGRID_API_KEY;
-            if (sgKey) {
-              const sgMail = require('@sendgrid/mail');
-              sgMail.setApiKey(sgKey);
-              const msg = {
+            const jobQueueService = require('../services/jobQueue');
+            if (jobQueueService.enabled) {
+              await jobQueueService.addJob('emails', 'sendEmail', {
                 to: patientEmail,
                 from: process.env.SENDGRID_FROM || 'no-reply@example.com',
                 subject: 'Your Appointment Meeting Link',
                 text: `Your appointment meeting link: ${meetingLink}`,
                 html: `<p>Your appointment meeting link: <a href="${meetingLink}">${meetingLink}</a></p>`
-              };
-              const sgResult = await sgMail.send(msg);
-              console.log('✅ Meeting link emailed via SendGrid to:', patientEmail, sgResult && sgResult[0] && sgResult[0].statusCode);
+              });
+              console.log('✅ Meeting link email queued for sending to:', patientEmail);
             } else {
-              console.log('ℹ️ SENDGRID_API_KEY not configured. Skipping email send. Would have sent to:', patientEmail, 'link:', meetingLink);
+              // Fallback: send immediately if job queue is disabled
+              const sgKey = process.env.SENDGRID_API_KEY;
+              if (sgKey) {
+                const sgMail = require('@sendgrid/mail');
+                sgMail.setApiKey(sgKey);
+                const msg = {
+                  to: patientEmail,
+                  from: process.env.SENDGRID_FROM || 'no-reply@example.com',
+                  subject: 'Your Appointment Meeting Link',
+                  text: `Your appointment meeting link: ${meetingLink}`,
+                  html: `<p>Your appointment meeting link: <a href="${meetingLink}">${meetingLink}</a></p>`
+                };
+                const sgResult = await sgMail.send(msg);
+                console.log('✅ Meeting link emailed via SendGrid to:', patientEmail, sgResult && sgResult[0] && sgResult[0].statusCode);
+              } else {
+                console.log('ℹ️ SENDGRID_API_KEY not configured. Skipping email send. Would have sent to:', patientEmail, 'link:', meetingLink);
+              }
             }
           } catch (mailErr) {
-            console.warn('Failed to send meeting link email via SendGrid (continuing):', mailErr && mailErr.message ? mailErr.message : mailErr);
+            console.warn('Failed to queue/send meeting link email (continuing):', mailErr && mailErr.message ? mailErr.message : mailErr);
           }
         } else {
           console.log('ℹ️ No patient email available to send meeting link to. Generated link:', meetingLink);
@@ -239,6 +251,15 @@ exports.createAppointment = async (req, res) => {
       }
 
       const result = await tebraService.createAppointment(appointmentData);
+    
+    // Invalidate appointment cache when new appointment is created
+    try {
+      const cacheService = require('../services/cacheService');
+      await cacheService.deletePattern('sxrx:appointments:*');
+      console.log('✅ [APPOINTMENTS] Invalidated appointment cache after creation');
+    } catch (cacheErr) {
+      console.warn('⚠️ [APPOINTMENTS] Failed to invalidate cache:', cacheErr?.message || cacheErr);
+    }
     
     console.log('🔍 Raw result from tebraService.createAppointment:', JSON.stringify(result, null, 2));
 
@@ -350,6 +371,27 @@ exports.searchAppointments = async (req, res) => {
   try {
     const { searchOptions = {}, patientId } = req.body;
     const { clientLocation } = req;
+    
+    // Parse pagination parameters
+    const { parsePaginationParams, createPaginationMeta, createPaginatedResponse } = require('../utils/pagination');
+    const pagination = parsePaginationParams(req, { defaultPage: 1, defaultLimit: 20, maxLimit: 100 });
+    
+    // Check cache for appointment list (include pagination in cache key)
+    const cacheService = require('../services/cacheService');
+    const cacheKey = cacheService.generateKey('appointments', { 
+      patientId: patientId || 'all',
+      startDate: searchOptions.startDate,
+      endDate: searchOptions.endDate,
+      providerId: searchOptions.providerId,
+      practiceId: searchOptions.practiceId,
+      page: pagination.page,
+      limit: pagination.limit
+    });
+    const cachedAppointments = await cacheService.get(cacheKey);
+    if (cachedAppointments) {
+      console.log(`✅ [APPOINTMENTS] Returning cached appointment list`);
+      return res.json(cachedAppointments);
+    }
 
     // Apply robust default date window if missing (past 180 days to next 365 days)
     const now = new Date();
@@ -494,13 +536,31 @@ exports.searchAppointments = async (req, res) => {
       console.log(`ℹ️ No patient ID provided - returning all appointments in date range`);
     }
 
-    res.json({
-      success: true,
-      message: 'Appointments retrieved successfully',
-      appointments: appointments,
-      totalCount: totalCount,
-      location: clientLocation
+    // Apply pagination
+    const total = appointments.length;
+    const startIndex = pagination.offset;
+    const endIndex = startIndex + pagination.limit;
+    const paginatedAppointments = appointments.slice(startIndex, endIndex);
+    
+    const paginationMeta = createPaginationMeta({
+      page: pagination.page,
+      limit: pagination.limit,
+      total
     });
+
+    const response = createPaginatedResponse(
+      paginatedAppointments,
+      paginationMeta,
+      {
+        message: 'Appointments retrieved successfully',
+        location: clientLocation
+      }
+    );
+    
+    // Cache appointment list for 2 minutes (120 seconds) - appointments change frequently
+    await cacheService.set(cacheKey, response, 120);
+    
+    res.json(response);
 
   } catch (error) {
     console.error('Tebra search appointments error:', error);
@@ -568,28 +628,41 @@ exports.updateAppointment = async (req, res) => {
 
       updates.notes = updates.notes ? `${updates.notes}\nMeeting Link: ${meetingLink}` : `Meeting Link: ${meetingLink}`;
 
-      // Attempt to email link to patient if email provided
+      // Queue email sending as background job
       const patientEmail = updates.patientEmail || updates.PatientEmail || updates.patientSummary?.Email;
       if (patientEmail) {
         try {
-          const sgKey = process.env.SENDGRID_API_KEY;
-          if (sgKey) {
-            const sgMail = require('@sendgrid/mail');
-            sgMail.setApiKey(sgKey);
-            const msg = {
+          const jobQueueService = require('../services/jobQueue');
+          if (jobQueueService.enabled) {
+            await jobQueueService.addJob('emails', 'sendEmail', {
               to: patientEmail,
               from: process.env.SENDGRID_FROM || 'no-reply@example.com',
               subject: 'Your Appointment Meeting Link',
               text: `Your appointment meeting link: ${meetingLink}`,
               html: `<p>Your appointment meeting link: <a href="${meetingLink}">${meetingLink}</a></p>`
-            };
-            await sgMail.send(msg);
-            console.log('✅ Meeting link emailed via SendGrid to:', patientEmail);
+            });
+            console.log('✅ Meeting link email queued for sending to:', patientEmail);
           } else {
-            console.log('ℹ️ SENDGRID_API_KEY not configured. Skipping email send. Would have sent to:', patientEmail, 'link:', meetingLink);
+            // Fallback: send immediately if job queue is disabled
+            const sgKey = process.env.SENDGRID_API_KEY;
+            if (sgKey) {
+              const sgMail = require('@sendgrid/mail');
+              sgMail.setApiKey(sgKey);
+              const msg = {
+                to: patientEmail,
+                from: process.env.SENDGRID_FROM || 'no-reply@example.com',
+                subject: 'Your Appointment Meeting Link',
+                text: `Your appointment meeting link: ${meetingLink}`,
+                html: `<p>Your appointment meeting link: <a href="${meetingLink}">${meetingLink}</a></p>`
+              };
+              await sgMail.send(msg);
+              console.log('✅ Meeting link emailed via SendGrid to:', patientEmail);
+            } else {
+              console.log('ℹ️ SENDGRID_API_KEY not configured. Skipping email send. Would have sent to:', patientEmail, 'link:', meetingLink);
+            }
           }
         } catch (mailErr) {
-          console.warn('Failed to send meeting link email via SendGrid on update (continuing):', mailErr && mailErr.message ? mailErr.message : mailErr);
+          console.warn('Failed to queue/send meeting link email on update (continuing):', mailErr && mailErr.message ? mailErr.message : mailErr);
         }
       } else {
         console.log('ℹ️ No patient email available to send updated meeting link to. Generated link:', meetingLink);
@@ -600,6 +673,16 @@ exports.updateAppointment = async (req, res) => {
   }
 
   const result = await tebraService.updateAppointment(appointmentIdToUse, updates);
+    
+    // Invalidate appointment cache when appointment is updated
+    try {
+      const cacheService = require('../services/cacheService');
+      await cacheService.deletePattern('sxrx:appointments:*');
+      await cacheService.deletePattern('sxrx:chart:*'); // Also invalidate chart cache
+      console.log('✅ [APPOINTMENTS] Invalidated appointment and chart cache after update');
+    } catch (cacheErr) {
+      console.warn('⚠️ [APPOINTMENTS] Failed to invalidate cache:', cacheErr?.message || cacheErr);
+    }
     
     console.log('🔍 Raw result from tebraService.updateAppointment:', JSON.stringify(result, null, 2));
 
@@ -672,6 +755,17 @@ exports.deleteAppointment = async (req, res) => {
     
     console.log(`🗑️ [TEBRA APPOINTMENT] Calling tebraService.deleteAppointment with ID: ${appointmentIdToUse}`);
     const result = await tebraService.deleteAppointment(appointmentIdToUse);
+    
+    // Invalidate appointment cache when appointment is deleted
+    try {
+      const cacheService = require('../services/cacheService');
+      await cacheService.deletePattern('sxrx:appointments:*');
+      await cacheService.deletePattern('sxrx:chart:*'); // Also invalidate chart cache
+      console.log('✅ [APPOINTMENTS] Invalidated appointment and chart cache after deletion');
+    } catch (cacheErr) {
+      console.warn('⚠️ [APPOINTMENTS] Failed to invalidate cache:', cacheErr?.message || cacheErr);
+    }
+    
     console.log(`🗑️ [TEBRA APPOINTMENT] Delete result from Tebra service:`, result);
 
     console.log(`✅ [TEBRA APPOINTMENT] Appointment ${appointmentIdToUse} deleted successfully`);

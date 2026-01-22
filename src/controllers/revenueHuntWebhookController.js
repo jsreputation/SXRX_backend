@@ -6,42 +6,8 @@ const pharmacyService = require('../services/pharmacyService');
 const qualiphyService = require('../services/qualiphyService');
 const customerPatientMapService = require('../services/customerPatientMapService');
 const shopifyUserService = require('../services/shopifyUserService');
-
-// Helpers
-function determineState(payload) {
-  // Try explicit field, else derive from shipping/billing address
-  // Also check patientInfo object if present
-  const state = (
-    payload.state ||
-    payload.shippingState ||
-    payload.billingState ||
-    payload.patientInfo?.state ||
-    (payload.address && payload.address.state) ||
-    (payload.shipping_address && payload.shipping_address.provinceCode) ||
-    (payload.shipping_address && payload.shipping_address.province) ||
-    (payload.billing_address && payload.billing_address.provinceCode) ||
-    (payload.billing_address && payload.billing_address.province) ||
-    undefined
-  );
-  
-  // Normalize state code (e.g., "California" -> "CA", "ca" -> "CA")
-  if (state) {
-    const stateMap = {
-      'california': 'CA',
-      'texas': 'TX',
-      'washington': 'WA',
-      'kuala lumpur': 'KL',
-      'kl': 'KL',
-      'new york': 'NY',
-      'florida': 'FL',
-      // Add more as needed
-    };
-    const normalized = stateMap[state.toLowerCase()] || state.toUpperCase();
-    return normalized;
-  }
-  
-  return undefined;
-}
+const questionnaireCompletionService = require('../services/questionnaireCompletionService');
+const { determineState } = require('../utils/stateUtils');
 
 function hasRedFlags(payload) {
   // RevenueHunt can send computed flags; fallback to simple checks
@@ -147,14 +113,46 @@ Please review the patient chart in Tebra and schedule a consultation.
 
 async function getAvailableSlots(mapping, options = {}) {
   try {
-    const availability = await tebraService.getAvailability({
+    const availabilityService = require('../services/availabilityService');
+    const cacheService = require('../services/cacheService');
+    
+    // Check cache first
+    const cacheKey = {
+      state: mapping.state || 'CA',
+      practiceId: mapping.practiceId,
+      providerId: mapping.defaultProviderId,
+      fromDate: options.fromDate || new Date().toISOString().split('T')[0],
+      toDate: options.toDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    };
+    
+    const cached = await cacheService.getCachedAvailability(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    
+    // Fetch raw availability from Tebra
+    const rawAvailability = await tebraService.getAvailability({
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
       isAvailable: true,
       fromDate: options.fromDate || new Date().toISOString().split('T')[0],
       toDate: options.toDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
     });
-    return availability.availability || [];
+    
+    // Apply business rules and filters (now async)
+    const filteredSlots = await availabilityService.filterAvailability(
+      rawAvailability.availability || [],
+      {
+        state: mapping.state || 'CA',
+        practiceId: mapping.practiceId,
+        providerId: mapping.defaultProviderId
+      }
+    );
+    
+    // Cache filtered slots
+    await cacheService.cacheAvailability(cacheKey, filteredSlots);
+    
+    return filteredSlots;
   } catch (error) {
     console.error('Error fetching availability:', error);
     return [];
@@ -199,6 +197,8 @@ async function createTelemedicineAppointment(patientId, mapping, scheduledTime) 
 
 // Controller
 exports.handleRevenueHunt = async (req, res) => {
+  const webhookRetryService = require('../services/webhookRetryService');
+  
   try {
     const payload = req.body || {};
 
@@ -241,20 +241,27 @@ exports.handleRevenueHunt = async (req, res) => {
       });
     }
 
-    // 1) Determine state and provider mapping
-    const state = (determineState(payload) || '').toUpperCase();
+    // 1) Determine state and provider mapping (using standardized utility with geolocation fallback)
+    const state = await determineState(payload, { req });
     
     // Log state determination for debugging
     if (!state) {
-      console.warn('⚠️ [REVENUEHUNT] State not found in payload:', {
+      console.warn('⚠️ [REVENUEHUNT] State not found in payload or geolocation:', {
         hasState: !!payload.state,
         hasShippingState: !!payload.shippingState,
         hasBillingState: !!payload.billingState,
         hasAddress: !!payload.address,
         hasShippingAddress: !!payload.shipping_address,
         hasBillingAddress: !!payload.billing_address,
+        clientLocation: req.clientLocation ? {
+          region: req.clientLocation.region,
+          regionCode: req.clientLocation.regionCode,
+          country: req.clientLocation.country
+        } : 'not available',
         payloadKeys: Object.keys(payload)
       });
+    } else {
+      console.log(`✅ [REVENUEHUNT] State determined: ${state}`);
     }
     
     const mapping = providerMapping[state] || {};
@@ -332,10 +339,28 @@ exports.handleRevenueHunt = async (req, res) => {
     const questionnaireDoc = await createQuestionnaireDocument(patientId, mapping, payload);
     console.log(`✅ [REVENUEHUNT] Stored questionnaire as document in patient chart: ${questionnaireDoc?.id || 'Created'}`);
 
-    // 5) Build patient chart URL (for frontend redirect)
+    // 5) Record questionnaire completion in registry (for secure validation)
+    try {
+      await questionnaireCompletionService.recordCompletion({
+        email: email,
+        customerId: customerId || null,
+        productId: productId,
+        quizId: payload.quizId || payload.quiz_id || 'unknown',
+        patientId: patientId,
+        redFlagsDetected: hasRedFlags(payload),
+        state: state,
+        purchaseType: purchaseType
+      });
+      console.log(`✅ [REVENUEHUNT] Recorded questionnaire completion in registry`);
+    } catch (completionErr) {
+      console.warn('⚠️ [REVENUEHUNT] Failed to record questionnaire completion (non-critical):', completionErr?.message || completionErr);
+      // Don't fail the webhook if registry update fails
+    }
+
+    // 6) Build patient chart URL (for frontend redirect)
     const patientChartUrl = `/pages/my-chart?customer=${customerId || email}`;
 
-    // 6) Branch by red flags
+    // 7) Branch by red flags
     const red = hasRedFlags(payload);
 
     // Keep Shopify customer metafields in sync (signed-in flow).
@@ -446,7 +471,7 @@ exports.handleRevenueHunt = async (req, res) => {
       }
     }
 
-    // Get available slots for Cowlendar/Tebra
+    // Get available slots from Tebra
     const availableSlots = await getAvailableSlots(mapping, {
       fromDate: new Date().toISOString().split('T')[0],
       toDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] // Next 2 weeks

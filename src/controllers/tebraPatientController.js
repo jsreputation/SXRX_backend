@@ -250,6 +250,16 @@ exports.updateTebraPatient = async (req, res) => {
     console.log(`✏️ [TEBRA UPDATE PATIENT] Updating patient: ${patientId}`);
 
     const updatedPatient = await tebraService.updatePatient(patientId, updateData);
+    
+    // Invalidate chart cache when patient is updated
+    try {
+      const cacheService = require('../services/cacheService');
+      // Invalidate all chart caches (patient update affects any customer's chart)
+      await cacheService.deletePattern('sxrx:chart:*');
+      console.log('✅ [PATIENT] Invalidated chart cache after patient update');
+    } catch (cacheErr) {
+      console.warn('⚠️ [PATIENT] Failed to invalidate cache:', cacheErr?.message || cacheErr);
+    }
 
     res.json({
       success: true,
@@ -278,6 +288,10 @@ exports.getTebraPatients = async (req, res) => {
       batchSize = 100, 
       startKey 
     } = req.query;
+    
+    // Parse pagination parameters
+    const { parsePaginationParams, createPaginationMeta, createPaginatedResponse } = require('../utils/pagination');
+    const pagination = parsePaginationParams(req, { defaultPage: 1, defaultLimit: 20, maxLimit: 100 });
 
     console.log(`📋 [TEBRA GET PATIENTS] Getting patients list`);
 
@@ -288,13 +302,32 @@ exports.getTebraPatients = async (req, res) => {
     };
 
     const result = await tebraService.getPatients(options);
-
-    res.json({
-      success: true,
-      message: 'Patients retrieved successfully',
-      data: result,
-      location: clientLocation
+    
+    // Extract patients array from result
+    const patients = result.patients || result.Patients || result.data || [];
+    const total = result.totalCount || result.TotalCount || patients.length;
+    
+    // Apply pagination
+    const startIndex = pagination.offset;
+    const endIndex = startIndex + pagination.limit;
+    const paginatedPatients = patients.slice(startIndex, endIndex);
+    
+    const paginationMeta = createPaginationMeta({
+      page: pagination.page,
+      limit: pagination.limit,
+      total
     });
+
+    const response = createPaginatedResponse(
+      paginatedPatients,
+      paginationMeta,
+      {
+        message: 'Patients retrieved successfully',
+        location: clientLocation
+      }
+    );
+
+    res.json(response);
 
   } catch (error) {
     console.error('Get Tebra patients error:', error);

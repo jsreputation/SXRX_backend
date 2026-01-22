@@ -1,27 +1,10 @@
+// Legacy health test - now using integration/health.test.js
+// Keeping this file for backward compatibility
+
 const request = require('supertest');
+const app = require('./helpers/testApp');
 
-// Note: This test requires the app to be properly configured
-// You may need to mock the database connection for unit tests
-
-describe('Health Check Endpoint', () => {
-  let app;
-
-  beforeAll(() => {
-    // Suppress console logs during tests
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-  });
-
-  beforeEach(() => {
-    // Reset modules to get fresh app instance
-    jest.resetModules();
-    app = require('../../index');
-  });
-
-  afterAll(() => {
-    jest.restoreAllMocks();
-  });
-
+describe('Health Check Endpoint (Legacy)', () => {
   it('should return health status', async () => {
     const res = await request(app).get('/health');
     
