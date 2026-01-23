@@ -192,7 +192,7 @@ ${patientXml}        </sch:Patient>
 
   // Generate CreateAppointment SOAP XML with proper structure
   generateCreateAppointmentSOAPXML(appointmentData) {
-    const auth = this.getAuthHeader();
+    const auth = this.buildRequestHeader(appointmentData?.PracticeId);
     
     // Define the required field order for CreateAppointment based on API documentation
     // IMPORTANT: Tebra has strict field ordering requirements:
@@ -429,7 +429,7 @@ ${patientXml}        </sch:Patient>
         <sch:RequestHeader>
           <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
           <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
-          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>${auth.PracticeId ? `\n          <sch:PracticeId>${this.xmlEscape(String(auth.PracticeId))}</sch:PracticeId>` : ''}
         </sch:RequestHeader>
         <sch:Appointment>
 ${appointmentXml}        </sch:Appointment>
@@ -1350,7 +1350,7 @@ ${appointmentXml}
         return parsed;
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
-      ResourceIds: appointmentData.resourceIds || appointmentData.ResourceIds || appointmentData.ResourceIDs || null,
+      // ResourceIds: omit to avoid v3 translation errors; use ResourceId only
       // Convert ServiceLocationId - Tebra requires it to be > 0, so use 1 (practice default) if not provided
       ServiceLocationId: (() => {
         const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
@@ -1498,20 +1498,27 @@ ${appointmentXml}
       }
     }
 
-    // ResourceID/ResourceIDs: Tebra requires them (July 2025). When absent, use ProviderId so the SOAP includes valid values.
+    // ResourceId: when absent, use ProviderId. Do NOT set ResourceIds (v3 translator can fail on array format).
     const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
-    const hasResourceIds = Array.isArray(appointment.ResourceIds) && appointment.ResourceIds.length > 0;
-    if (!hasResourceId(appointment.ResourceId) && !hasResourceIds) {
+    if (!hasResourceId(appointment.ResourceId)) {
       const pid = appointment.ProviderId;
       if (pid != null && !isNaN(parseInt(String(pid), 10))) {
-        const p = parseInt(String(pid), 10);
-        appointment.ResourceId = p;
-        appointment.ResourceIds = [p];
-        console.log(`✅ [TEBRA] Set ResourceId/ResourceIds from ProviderId: ${p}`);
+        appointment.ResourceId = parseInt(String(pid), 10);
+        console.log(`✅ [TEBRA] Set ResourceId from ProviderId: ${appointment.ResourceId}`);
       }
     }
 
-    return appointment;
+    // Minimal payload for v3: only fields the CreateAppointmentV3Request translator accepts.
+    const ALLOWED = ['AppointmentMode','AppointmentName','AppointmentReasonId','AppointmentStatus','AppointmentType','EndTime','IsRecurring','Notes','PatientId','PracticeId','ProviderId','ResourceId','ServiceLocationId','StartTime','WasCreatedOnline'];
+    const out = {};
+    for (const k of ALLOWED) {
+      const v = appointment[k];
+      if (v === undefined) continue;
+      if (v === null && ['AppointmentReasonId','ResourceId','PatientId','PracticeId','ProviderId','ServiceLocationId'].includes(k)) continue;
+      if ((v === null || v === '') && k === 'Notes') continue;
+      out[k] = v;
+    }
+    return out;
   }
 
   // Build appointment fields for GetAppointments SOAP call
