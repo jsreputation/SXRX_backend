@@ -396,6 +396,7 @@ const revenueHuntWebhookController = require('./controllers/revenueHuntWebhookCo
 const appointmentReminderService = require('./services/appointmentReminderService');
 const alertingService = require('./services/alertingService');
 const businessMetricsService = require('./services/businessMetricsService');
+const metricsService = require('./services/metricsService');
 
 // Schedule webhook retry processing every 5 minutes
 cron.schedule('*/5 * * * *', async () => {
@@ -438,7 +439,10 @@ if (alertingService.enabled) {
       const metrics = metricsService.getMetricsSummary();
       await alertingService.checkThresholds(metrics);
     } catch (error) {
-      logger.error('[CRON] Metrics/alerting check failed', { error: error.message });
+      logger.error('[CRON] Metrics/alerting check failed', { 
+        error: error?.message || error?.toString() || 'Unknown error',
+        stack: error?.stack
+      });
     }
   });
 }
