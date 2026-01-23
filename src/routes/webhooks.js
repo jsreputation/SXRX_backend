@@ -35,7 +35,7 @@ if (jobQueueService.enabled) {
  *   post:
  *     summary: RevenueHunt v2 questionnaire completion webhook
  *     tags: [Webhooks]
- *     description: Receives questionnaire results from RevenueHunt v2. Note: RevenueHunt v2 does not use webhook secrets/signatures.
+ *     description: "Receives questionnaire results from RevenueHunt v2. Note: RevenueHunt v2 does not use webhook secrets/signatures."
  *     requestBody:
  *       required: true
  *       content:
