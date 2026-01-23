@@ -29,8 +29,9 @@ if (jobQueueService.enabled) {
   logger.info('[WEBHOOKS] Job queue workers initialized');
 }
 
-// RevenueHunt sends questionnaire results via webhook
-// Note: captureRawBody must come before express.json() to preserve raw body for signature verification
+// RevenueHunt v2 sends questionnaire results via webhook
+// Note: RevenueHunt v2 does not use webhook secrets/signatures, so verification is skipped
+// captureRawBody is kept for consistency but not required for signature verification
 router.post('/revenue-hunt', captureRawBody, express.json({ limit: '2mb' }), verifyRevenueHuntWebhook, handleRevenueHunt);
 
 // Create telemedicine appointment with Google Meet link
@@ -74,7 +75,7 @@ router.get('/practices', async (req, res) => {
   }
 });
 
-router.get('/providers/:practiceId', cacheStrategies.long(), async (req, res) => {
+router.get('/providers/:practiceId', async (req, res) => {
   try {
     const { practiceId } = req.params;
     
@@ -258,8 +259,6 @@ router.post('/shopify/orders/created', captureRawBody, express.json({ limit: '1m
     return await billingController.handleShopifyOrderCreated(req, res);
   }
 });
-
-// Cowlendar webhook endpoints removed - using direct Tebra booking instead
 
 // Test endpoint to verify webhook connectivity
 router.get('/shopify/orders/created/test', (req, res) => {

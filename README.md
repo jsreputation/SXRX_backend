@@ -423,8 +423,9 @@ Most endpoints require authentication via:
 
 #### Webhooks
 - `POST /webhooks/stripe` - Stripe webhook handler
-- `POST /webhooks/revenue-hunt` - RevenueHunt questionnaire webhook
+- `POST /webhooks/revenue-hunt` - RevenueHunt v2 questionnaire webhook
   - Processes questionnaire responses from RevenueHunt v2
+  - **Note:** RevenueHunt v2 does not use webhook secrets/signatures - all webhooks are accepted
   - Creates/updates patient in Tebra EHR
   - Stores questionnaire as consultation document
   - Handles red flags and routes to consultation if needed

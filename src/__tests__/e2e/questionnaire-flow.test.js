@@ -1,7 +1,6 @@
 // E2E tests for questionnaire completion flow
 
 const request = require('supertest');
-const crypto = require('crypto');
 const app = require('../helpers/testApp');
 
 // Mock external services
@@ -17,17 +16,13 @@ const questionnaireCompletionService = require('../../services/questionnaireComp
 const customerPatientMapService = require('../../services/customerPatientMapService');
 const availabilityService = require('../../services/availabilityService');
 
-// Helper to generate webhook signature
-function generateRevenueHuntSignature(body, secret) {
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(body, 'utf8');
-  return hmac.digest('hex');
-}
+// Note: RevenueHunt v2 does not use webhook secrets/signatures
+// All RevenueHunt webhooks are accepted without signature verification
 
 describe('E2E: Questionnaire Flow - No Red Flags', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.REVENUEHUNT_WEBHOOK_SECRET = 'test-secret';
+    // RevenueHunt v2 doesn't require webhook secret
   });
 
   it('should complete full questionnaire flow: quiz → webhook → checkout', async () => {
@@ -47,9 +42,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
       state: 'CA'
     };
 
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
-
     // Mock services
     questionnaireCompletionService.recordCompletion = jest.fn().mockResolvedValue({
       completionId: 'completion-123',
@@ -68,7 +60,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
     // Step 2: Send questionnaire webhook
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);
@@ -105,9 +96,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
       state: 'CA',
       redFlags: ['High blood pressure', 'Recent surgery']
     };
-
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
 
     // Mock services for red flag scenario
     questionnaireCompletionService.recordCompletion = jest.fn().mockResolvedValue({
@@ -146,7 +134,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
     // Step 2: Send questionnaire webhook
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);
@@ -169,9 +156,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
       state: 'CA'
     };
 
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
-
     // Mock existing patient lookup
     customerPatientMapService.getPatientId = jest.fn().mockResolvedValue('existing-patient-123');
     tebraService.getPatient = jest.fn().mockResolvedValue({
@@ -189,7 +173,6 @@ describe('E2E: Questionnaire Flow - No Red Flags', () => {
 
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);

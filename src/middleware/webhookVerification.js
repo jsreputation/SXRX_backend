@@ -1,5 +1,6 @@
 // backend/src/middleware/webhookVerification.js
-// Middleware to verify webhook signatures for Shopify and RevenueHunt
+// Middleware to verify webhook signatures for Shopify
+// Note: RevenueHunt v2 does not use webhook secrets/signatures
 
 const crypto = require('crypto');
 const logger = require('../utils/logger');
@@ -68,62 +69,19 @@ function verifyShopifyWebhook(req, res, next) {
 }
 
 /**
- * Verify RevenueHunt webhook signature
- * RevenueHunt may send webhooks with signature in header or body
+ * Verify RevenueHunt webhook
+ * Note: RevenueHunt v2 does not use webhook secrets/signatures
+ * This middleware simply logs the request and passes through
  */
 function verifyRevenueHuntWebhook(req, res, next) {
   try {
-    const revenueHuntSecret = process.env.REVENUEHUNT_WEBHOOK_SECRET;
-    
-    // If no secret configured, skip verification (development mode)
-    if (!revenueHuntSecret) {
-      logger.warn('[WEBHOOK VERIFY] RevenueHunt webhook secret not configured - skipping verification');
-      return next();
-    }
-    
-    // Check for signature in header (X-RevenueHunt-Signature) or body
-    const signatureHeader = req.get('X-RevenueHunt-Signature') || 
-                           req.get('X-Signature') ||
-                           req.body?.signature;
-    
-    if (!signatureHeader) {
-      logger.warn('[WEBHOOK VERIFY] Missing RevenueHunt webhook signature');
-      // In development, allow without signature if explicitly enabled
-      if (process.env.NODE_ENV === 'development' && process.env.ALLOW_UNSIGNED_WEBHOOKS === 'true') {
-        logger.warn('[WEBHOOK VERIFY] Allowing unsigned webhook in development mode');
-        return next();
-      }
-      return res.status(401).json({
-        success: false,
-        message: 'Missing webhook signature'
-      });
-    }
-    
-    // Calculate expected signature
-    // RevenueHunt typically uses HMAC-SHA256 with the request body
-    const rawBody = req.rawBody || (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
-    const calculatedSignature = crypto
-      .createHmac('sha256', revenueHuntSecret)
-      .update(rawBody, 'utf8')
-      .digest('hex');
-    
-    // Compare signatures
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(signatureHeader),
-      Buffer.from(calculatedSignature)
-    );
-    
-    if (!isValid) {
-      logger.warn('[WEBHOOK VERIFY] Invalid RevenueHunt webhook signature', {
-        path: req.path
-      });
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid webhook signature'
-      });
-    }
-    
-    logger.debug('[WEBHOOK VERIFY] RevenueHunt webhook signature verified');
+    // RevenueHunt v2 does not provide webhook secrets
+    // We accept all RevenueHunt webhooks without signature verification
+    logger.debug('[WEBHOOK VERIFY] RevenueHunt v2 webhook received (no signature verification)', {
+      path: req.path,
+      method: req.method,
+      hasBody: !!req.body
+    });
     next();
   } catch (error) {
     logger.errorWithContext(error, {

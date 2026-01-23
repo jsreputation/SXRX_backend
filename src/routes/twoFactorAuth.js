@@ -4,7 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const twoFactorAuthService = require('../services/twoFactorAuthService');
-const { authenticateToken } = require('../middleware/auth');
+const { auth: authenticateToken } = require('../middleware/shopifyTokenAuth');
 const logger = require('../utils/logger');
 
 /**

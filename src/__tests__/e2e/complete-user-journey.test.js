@@ -1,7 +1,7 @@
 // E2E tests for complete user journey (registration → questionnaire → booking → checkout)
+// Note: RevenueHunt v2 does not use webhook secrets/signatures
 
 const request = require('supertest');
-const crypto = require('crypto');
 const app = require('../helpers/testApp');
 
 // Mock external services
@@ -21,17 +21,13 @@ const questionnaireCompletionService = require('../../services/questionnaireComp
 const availabilityService = require('../../services/availabilityService');
 const appointmentEmailService = require('../../services/appointmentEmailService');
 
-// Helper to generate webhook signature
-function generateRevenueHuntSignature(body, secret) {
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(body, 'utf8');
-  return hmac.digest('hex');
-}
+// Note: RevenueHunt v2 does not use webhook secrets/signatures
+// All RevenueHunt webhooks are accepted without signature verification
 
 describe('E2E: Complete User Journey - No Red Flags', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.REVENUEHUNT_WEBHOOK_SECRET = 'test-secret';
+    // RevenueHunt v2 doesn't require webhook secret
   });
 
   it('should complete full journey: register → questionnaire → checkout', async () => {
@@ -83,8 +79,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
       state: 'CA'
     };
 
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
 
     questionnaireCompletionService.recordCompletion = jest.fn().mockResolvedValue({
       completionId: 'completion-123',
@@ -99,7 +93,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
 
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);
@@ -160,8 +153,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
       redFlags: ['High blood pressure']
     };
 
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
 
     questionnaireCompletionService.recordCompletion = jest.fn().mockResolvedValue({
       completionId: 'completion-456',
@@ -192,7 +183,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
 
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);
@@ -277,8 +267,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
       state: 'CA'
     };
 
-    const body = JSON.stringify(quizData);
-    const signature = generateRevenueHuntSignature(body, process.env.REVENUEHUNT_WEBHOOK_SECRET);
 
     questionnaireCompletionService.recordCompletion = jest.fn().mockResolvedValue({
       completionId: 'completion-guest-123',
@@ -290,7 +278,6 @@ describe('E2E: Complete User Journey - No Red Flags', () => {
 
     const webhookRes = await request(app)
       .post('/webhooks/revenue-hunt')
-      .set('X-RevenueHunt-Signature', signature)
       .set('Content-Type', 'application/json')
       .send(quizData)
       .expect(200);

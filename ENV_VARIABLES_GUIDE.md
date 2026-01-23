@@ -303,21 +303,16 @@ This document provides detailed descriptions, validation rules, and requirements
 
 ## Webhook Configuration
 
-### REVENUEHUNT_WEBHOOK_SECRET
-- **Type**: String
-- **Required**: No (but recommended for production)
-- **Description**: RevenueHunt webhook secret for signature verification
-- **Example**: `your_revenuehunt_webhook_secret_here`
-- **Security**: Keep secret
-- **How to get**: Contact RevenueHunt support
+### RevenueHunt v2 Webhooks
+**Note:** RevenueHunt v2 does not use webhook secrets or signatures. All RevenueHunt webhooks are accepted without signature verification. The webhook endpoint validates the payload structure instead.
 
 ### ALLOW_UNSIGNED_WEBHOOKS
 - **Type**: Boolean
 - **Required**: No (default: false)
-- **Description**: Allow unsigned webhooks in development
+- **Description**: Allow unsigned webhooks in development (legacy setting, not used for RevenueHunt v2)
 - **Example**: `false`
 - **Validation**: Must be `true` or `false`
-- **Notes**: Only set to `true` in development, never in production
+- **Notes**: This setting is deprecated for RevenueHunt v2 webhooks
 
 ---
 
