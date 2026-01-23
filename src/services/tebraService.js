@@ -196,44 +196,35 @@ ${patientXml}        </sch:Patient>
     
     // Define the required field order for CreateAppointment based on API documentation
     // IMPORTANT: Tebra has strict field ordering requirements:
-    // - PracticeId must come before StartTime and EndTime
-    // - EndTime must come after CustomerId and before ForRecare
-    // - StartTime must come after PracticeId
+    // - PracticeID must come before StartTime and EndTime
+    // - EndTime must come before ForRecare
+    // - StartTime must come after PracticeID
     const requiredFieldOrder = [
-      'AppointmentId',
+      'AppointmentID',
       'AppointmentMode', 
       'AppointmentName',
-      'AppointmentReasonId',
+      'AppointmentReasonID',
       'AppointmentStatus',
       'AppointmentType',
-      'AppointmentUUID',
       'AttendeesCount',
-      'CreatedAt',
-      'CreatedBy',
-      'CustomerId',
-      'EndTime', // Must come after CustomerId and before ForRecare
+      'EndTime', // Must come before ForRecare
       'ForRecare',
-      'InsurancePolicyAuthorizationId',
-      'IsDeleted',
+      'InsurancePolicyAuthorizationID',
       'IsGroupAppointment',
       'IsRecurring',
       'MaxAttendees',
       'Notes',
-      'OccurrenceId',
-      'PatientCaseId',
+      'PatientCaseID',
       'PatientSummaries',
       'PatientSummary',
-      'PatientGuid',
-      'PatientId',
-      'PracticeId', // Must come before StartTime
-      'ProviderId',
+      'PatientID',
+      'PracticeID', // Must come before StartTime
+      'ProviderID',
       'RecurrenceRule',
-      'ResourceId',
-      'ResourceIds',
-      'ServiceLocationId',
-      'StartTime', // Must come after PracticeId
-      'UpdatedAt',
-      'UpdatedBy',
+      'ResourceID',
+      'ResourceIDs',
+      'ServiceLocationID',
+      'StartTime', // Must come after PracticeID
       'WasCreatedOnline'
     ];
     
@@ -253,10 +244,10 @@ ${patientXml}        </sch:Patient>
         if (value === undefined || value === '') {
           // Log if PracticeId is being skipped (critical field) - but only if it's actually missing
           // Check all possible case variations
-          if (key === 'PracticeId') {
-            const hasPracticeId = data.PracticeId !== undefined || data.practiceId !== undefined || data.PracticeID !== undefined;
+          if (key === 'PracticeID') {
+            const hasPracticeId = data.PracticeID !== undefined || data.practiceId !== undefined || data.PracticeId !== undefined;
             if (!hasPracticeId) {
-              console.warn(`⚠️ [TEBRA] PracticeId is undefined or empty - this will cause errors!`);
+              console.warn(`⚠️ [TEBRA] PracticeID is undefined or empty - this will cause errors!`);
             }
           }
           continue;
@@ -267,9 +258,9 @@ ${patientXml}        </sch:Patient>
         // even if null, because Tebra expects them in a specific order before StartTime
         // However, since we're iterating in requiredFieldOrder, the order is maintained even if we skip them
         const skipNullFields = [
-          'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
-          'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'DateOfBirth', 'PatientGuid', 'PatientSummary'
+          'AppointmentID', 'AppointmentReasonID', 'PatientCaseID',
+          'InsurancePolicyAuthorizationID',
+          'Notes', 'DateOfBirth', 'PatientSummary'
           // Removed: 'ProviderId', 'ResourceId', 'ResourceIds', 'ServiceLocationId' - must maintain order even if null
         ];
         if (value === null && skipNullFields.includes(key)) continue;
@@ -278,7 +269,7 @@ ${patientXml}        </sch:Patient>
         // even if null to maintain Tebra's strict field ordering requirements
         // Tebra expects these fields to appear before StartTime
         // Note: ProviderId and ServiceLocationId are now set to 0 instead of null to maintain order
-        const orderCriticalFields = ['ResourceId', 'ResourceIds', 'RecurrenceRule'];
+        const orderCriticalFields = ['ResourceID', 'ResourceIDs', 'RecurrenceRule'];
         if (orderCriticalFields.includes(key) && value === null) {
           // Skip these if null - they're truly optional
           continue;
@@ -355,9 +346,9 @@ ${patientXml}        </sch:Patient>
         
         // Skip null values for ID fields that should be integers or empty fields that cause parsing errors
         const skipNullFields = [
-          'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
-          'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId', 'PatientGuid', 'PatientSummary'
+          'AppointmentID', 'AppointmentReasonID', 'PatientCaseID',
+          'ResourceID', 'InsurancePolicyAuthorizationID',
+          'Notes', 'ResourceIDs', 'DateOfBirth', 'ProviderID', 'ServiceLocationID', 'PatientSummary'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -408,12 +399,12 @@ ${patientXml}        </sch:Patient>
       console.log(`🔍 [TEBRA] Field order in generated XML: ${fieldOrderInXml.join(' -> ')}`);
       // Check if StartTime appears before the required fields
       const startTimeIndex = fieldOrderInXml.indexOf('StartTime');
-      const practiceIdIndex = fieldOrderInXml.indexOf('PracticeId');
-      const providerIdIndex = fieldOrderInXml.indexOf('ProviderId');
+      const practiceIdIndex = fieldOrderInXml.indexOf('PracticeID');
+      const providerIdIndex = fieldOrderInXml.indexOf('ProviderID');
       if (startTimeIndex !== -1 && practiceIdIndex !== -1) {
-        console.log(`🔍 [TEBRA] PracticeId at index ${practiceIdIndex}, StartTime at index ${startTimeIndex}`);
+        console.log(`🔍 [TEBRA] PracticeID at index ${practiceIdIndex}, StartTime at index ${startTimeIndex}`);
         if (startTimeIndex <= practiceIdIndex + 1) {
-          console.warn(`⚠️ [TEBRA] StartTime appears too early! Expected ProviderId/ResourceId/etc. between PracticeId and StartTime`);
+          console.warn(`⚠️ [TEBRA] StartTime appears too early! Expected ProviderID/ResourceID/etc. between PracticeID and StartTime`);
         }
       }
     }
@@ -1291,97 +1282,95 @@ ${appointmentXml}
 
   // Build appointment data for CreateAppointment SOAP call
   async buildAppointmentData(appointmentData) {
+    const parseId = (value) => {
+      if (value === null || value === undefined || value === '') return undefined;
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string' && /^\d+$/.test(value)) return parseInt(value, 10);
+      return value;
+    };
+
     const appointment = {
       // Required fields with defaults if not provided
-      AppointmentId: appointmentData.appointmentId || appointmentData.AppointmentId || null,
-      AppointmentMode: appointmentData.appointmentMode || appointmentData.AppointmentMode || 'Telehealth', // Default mode
-      AppointmentName: appointmentData.appointmentName || appointmentData.AppointmentName || 'Appointment',
-      AppointmentReasonId: null, // Will be set after lookup
-      AppointmentStatus: appointmentData.appointmentStatus || appointmentData.AppointmentStatus || 'Scheduled',
+      AppointmentID: parseId(appointmentData.appointmentId ?? appointmentData.AppointmentID ?? appointmentData.AppointmentId),
+      AppointmentMode: appointmentData.appointmentMode ?? appointmentData.AppointmentMode ?? 'Telehealth', // Default mode
+      AppointmentName: appointmentData.appointmentName ?? appointmentData.AppointmentName ?? 'Appointment',
+      AppointmentReasonID: null, // Will be set after lookup
+      AppointmentStatus: appointmentData.appointmentStatus ?? appointmentData.AppointmentStatus ?? 'Scheduled',
       // Required fields
-      AppointmentType: appointmentData.appointmentType || appointmentData.AppointmentType || 'P', // Default to Patient
-      IsRecurring: appointmentData.isRecurring || appointmentData.IsRecurring || false,
-      WasCreatedOnline: appointmentData.wasCreatedOnline || appointmentData.WasCreatedOnline || true,
-      PatientId: appointmentData.patientId || appointmentData.PatientID || appointmentData.PatientId,
-      PatientGuid: appointmentData.patientGuid || appointmentData.PatientGuid || appointmentData.PatientGUID,
-      // Add missing required fields with defaults
-      AppointmentUUID: appointmentData.appointmentUUID || appointmentData.AppointmentUUID || null,
-      AttendeesCount: appointmentData.attendeesCount || appointmentData.AttendeesCount || 1,
-      CreatedAt: appointmentData.createdAt || appointmentData.CreatedAt || undefined,
-      CreatedBy: appointmentData.createdBy || appointmentData.CreatedBy || null,
-      CustomerId: appointmentData.customerId || appointmentData.CustomerId || null,
-      EndTime: appointmentData.endTime || appointmentData.EndTime,
-      ForRecare: appointmentData.forRecare || appointmentData.ForRecare || false,
-      InsurancePolicyAuthorizationId: appointmentData.insurancePolicyAuthorizationId || appointmentData.InsurancePolicyAuthorizationId || appointmentData.InsurancePolicyAuthorizationID || null,
-      IsDeleted: appointmentData.isDeleted || appointmentData.IsDeleted || false,
-      IsGroupAppointment: appointmentData.isGroupAppointment || appointmentData.IsGroupAppointment || false,
-      MaxAttendees: appointmentData.maxAttendees || appointmentData.MaxAttendees || 1,
+      AppointmentType: appointmentData.appointmentType ?? appointmentData.AppointmentType ?? 'P', // Default to Patient
+      IsRecurring: appointmentData.isRecurring ?? appointmentData.IsRecurring ?? false,
+      WasCreatedOnline: appointmentData.wasCreatedOnline ?? appointmentData.WasCreatedOnline ?? true,
+      PatientID: parseId(appointmentData.patientId ?? appointmentData.PatientID ?? appointmentData.PatientId),
+      // Optional fields supported by CreateAppointment
+      AttendeesCount: appointmentData.attendeesCount ?? appointmentData.AttendeesCount,
+      EndTime: appointmentData.endTime ?? appointmentData.EndTime,
+      ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
+      InsurancePolicyAuthorizationID: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationID),
+      IsGroupAppointment: appointmentData.isGroupAppointment ?? appointmentData.IsGroupAppointment ?? false,
+      MaxAttendees: appointmentData.maxAttendees ?? appointmentData.MaxAttendees ?? 1,
       Notes: this.buildAppointmentNotes(appointmentData),
-      OccurrenceId: appointmentData.occurrenceId || appointmentData.OccurrenceId || null,
-      PatientCaseId: appointmentData.patientCaseId || appointmentData.PatientCaseId || appointmentData.PatientCaseID || null,
-      // Convert PracticeId to integer (Tebra expects integer, not string)
-      PracticeId: (() => {
-        const practiceId = appointmentData.practiceId || appointmentData.PracticeID || appointmentData.PracticeId || '1';
+      PatientCaseID: parseId(appointmentData.patientCaseId ?? appointmentData.PatientCaseId ?? appointmentData.PatientCaseID),
+      // Convert PracticeID to integer (Tebra expects integer, not string)
+      PracticeID: (() => {
+        const practiceId = appointmentData.practiceId ?? appointmentData.PracticeID ?? appointmentData.PracticeId ?? '1';
         const parsed = typeof practiceId === 'string' ? parseInt(practiceId, 10) : practiceId;
         if (isNaN(parsed)) {
-          console.error(`❌ [TEBRA] Invalid PracticeId value: ${practiceId}, using default 1`);
+          console.error(`❌ [TEBRA] Invalid PracticeID value: ${practiceId}, using default 1`);
           return 1;
         }
-        console.log(`✅ [TEBRA] Using PracticeId: ${parsed} (converted from ${practiceId})`);
+        console.log(`✅ [TEBRA] Using PracticeID: ${parsed} (converted from ${practiceId})`);
         return parsed;
       })(),
-      // Convert ProviderId to integer (Tebra expects integer, not string)
-      // IMPORTANT: Tebra requires ProviderId to appear in XML before StartTime for field ordering
+      // Convert ProviderID to integer (Tebra expects integer, not string)
+      // IMPORTANT: Tebra requires ProviderID to appear in XML before StartTime for field ordering
       // Use the provided value (even if it's 1) to maintain field order
-      ProviderId: (() => {
-        const providerId = appointmentData.providerId || appointmentData.ProviderID || appointmentData.ProviderId;
-        // For field ordering, we need to include ProviderId
+      ProviderID: (() => {
+        const providerId = appointmentData.providerId ?? appointmentData.ProviderID ?? appointmentData.ProviderId;
+        // For field ordering, we need to include ProviderID
         // Use provided value or default to 1 (practice default provider)
         if (!providerId) {
-          console.log(`⚠️ [TEBRA] No ProviderId provided, using default 1 for field order`);
+          console.log(`⚠️ [TEBRA] No ProviderID provided, using default 1 for field order`);
           return 1; // Use practice default provider
         }
         const parsed = typeof providerId === 'string' ? parseInt(providerId, 10) : providerId;
         if (isNaN(parsed)) {
-          console.log(`⚠️ [TEBRA] Invalid ProviderId value: ${providerId}, using default 1`);
+          console.log(`⚠️ [TEBRA] Invalid ProviderID value: ${providerId}, using default 1`);
           return 1;
         }
-        console.log(`✅ [TEBRA] Using ProviderId: ${parsed} (converted from ${providerId})`);
+        console.log(`✅ [TEBRA] Using ProviderID: ${parsed} (converted from ${providerId})`);
         return parsed;
       })(),
-      ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
-      // ResourceIds: required by Tebra API 4.14.1; set from input or [ResourceId] or [ProviderId]
-      // Convert ServiceLocationId - Tebra requires it to be > 0, so use 1 (practice default) if not provided
-      ServiceLocationId: (() => {
-        const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
-        // Tebra requires ServiceLocationId to be > 0, so use 1 (practice default) if not provided
+      ResourceID: parseId(appointmentData.resourceId ?? appointmentData.ResourceID ?? appointmentData.ResourceId),
+      // ResourceIDs: required by Tebra API 4.14.1; set from input or [ResourceID] or [ProviderID]
+      // Convert ServiceLocationID - Tebra requires it to be > 0, so use 1 (practice default) if not provided
+      ServiceLocationID: (() => {
+        const serviceLocationId = appointmentData.serviceLocationId ?? appointmentData.ServiceLocationID ?? appointmentData.ServiceLocationId;
+        // Tebra requires ServiceLocationID to be > 0, so use 1 (practice default) if not provided
         if (!serviceLocationId || serviceLocationId === 'default-location') {
-          console.log(`⚠️ [TEBRA] No ServiceLocationId provided, using default 1 (practice default service location)`);
+          console.log(`⚠️ [TEBRA] No ServiceLocationID provided, using default 1 (practice default service location)`);
           return 1; // Use practice default service location
         }
         const parsed = typeof serviceLocationId === 'string' ? parseInt(serviceLocationId, 10) : serviceLocationId;
         if (isNaN(parsed)) {
           // If it's not a number, return as-is (might be a string identifier)
-          console.log(`✅ [TEBRA] Using ServiceLocationId: ${serviceLocationId} (as string)`);
+          console.log(`✅ [TEBRA] Using ServiceLocationID: ${serviceLocationId} (as string)`);
           return serviceLocationId;
         }
         if (parsed <= 0) {
-          console.log(`⚠️ [TEBRA] ServiceLocationId ${parsed} is <= 0, using default 1`);
+          console.log(`⚠️ [TEBRA] ServiceLocationID ${parsed} is <= 0, using default 1`);
           return 1; // Tebra requires > 0
         }
-        console.log(`✅ [TEBRA] Using ServiceLocationId: ${parsed} (converted from ${serviceLocationId})`);
+        console.log(`✅ [TEBRA] Using ServiceLocationID: ${parsed} (converted from ${serviceLocationId})`);
         return parsed;
       })(),
-      StartTime: appointmentData.startTime || appointmentData.StartTime,
-      UpdatedAt: appointmentData.updatedAt || appointmentData.UpdatedAt || undefined,
-      UpdatedBy: appointmentData.updatedBy || appointmentData.UpdatedBy || null
+      StartTime: appointmentData.startTime ?? appointmentData.StartTime
     };
 
     // PatientSummary: required by Tebra API 4.14.1 (Create Appointment). Always include per guide.
     const fromInput = appointmentData.patientSummary || appointmentData.PatientSummary;
     const ps = {
-      PatientId: appointment.PatientId,
-      PracticeId: appointment.PracticeId,
+      PatientID: appointment.PatientID,
+      PracticeID: appointment.PracticeID,
       FirstName: fromInput?.FirstName ?? fromInput?.firstName ?? appointmentData.patientFirstName ?? appointmentData.PatientFirstName ?? 'Unknown',
       LastName: fromInput?.LastName ?? fromInput?.lastName ?? appointmentData.patientLastName ?? appointmentData.PatientLastName ?? 'Patient',
       Email: fromInput?.Email ?? fromInput?.email ?? appointmentData.patientEmail ?? appointmentData.PatientEmail ?? 'unknown@example.com'
@@ -1392,7 +1381,7 @@ ${appointmentXml}
     if (opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone, appointmentData.PatientHomePhone) != null) ps.HomePhone = opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone, appointmentData.PatientHomePhone);
     if (opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone, appointmentData.PatientWorkPhone) != null) ps.WorkPhone = opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone, appointmentData.PatientWorkPhone);
     if (opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone, appointmentData.PatientMobilePhone) != null) ps.MobilePhone = opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone, appointmentData.PatientMobilePhone);
-    if (opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId) != null) ps.GenderId = opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId);
+    if (opt(fromInput?.GenderID, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId) != null) ps.GenderID = opt(fromInput?.GenderID, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId);
     appointment.PatientSummary = ps;
 
     // Add PatientSummaries if provided (for group appointments)
@@ -1401,7 +1390,7 @@ ${appointmentXml}
         DateOfBirth: patient.dateOfBirth,
         Email: patient.email,
         FirstName: patient.firstName,
-        GenderId: patient.genderId,
+        GenderID: patient.genderId,
         Guid: patient.guid,
         HomePhone: patient.homePhone,
         LastName: patient.lastName,
@@ -1409,8 +1398,8 @@ ${appointmentXml}
         MobilePhone: patient.mobilePhone,
         OtherEmail: patient.otherEmail,
         OtherPhone: patient.otherPhone,
-        PatientId: patient.patientId,
-        PracticeId: patient.practiceId,
+        PatientID: patient.patientId,
+        PracticeID: patient.practiceId,
         PreferredEmailType: patient.preferredEmailType,
         PreferredPhoneType: patient.preferredPhoneType,
         WorkEmail: patient.workEmail,
@@ -1422,7 +1411,7 @@ ${appointmentXml}
     // Add RecurrenceRule if provided
     if (appointmentData.recurrenceRule) {
       appointment.RecurrenceRule = {
-        AppointmentId: appointmentData.recurrenceRule.appointmentId,
+        AppointmentID: appointmentData.recurrenceRule.appointmentId,
         DayInterval: appointmentData.recurrenceRule.dayInterval,
         DayOfMonth: appointmentData.recurrenceRule.dayOfMonth,
         DayOfWeek: appointmentData.recurrenceRule.dayOfWeek,
@@ -1434,7 +1423,7 @@ ${appointmentXml}
         MonthOfYear: appointmentData.recurrenceRule.monthOfYear,
         NumOccurrences: appointmentData.recurrenceRule.numOccurrences,
         NumberOfTimes: appointmentData.recurrenceRule.numberOfTimes,
-        RecurrenceRuleId: appointmentData.recurrenceRule.recurrenceRuleId,
+        RecurrenceRuleID: appointmentData.recurrenceRule.recurrenceRuleId,
         StartDate: appointmentData.recurrenceRule.startDate,
         TypeOfDay: appointmentData.recurrenceRule.typeOfDay,
         TypeOfDayMonthlyOrdinal: appointmentData.recurrenceRule.typeOfDayMonthlyOrdinal,
@@ -1443,61 +1432,61 @@ ${appointmentXml}
     }
 
     // Look up appointment reason ID if a name or ID was provided
-    const reasonNameOrId = appointmentData.appointmentReasonId || appointmentData.AppointmentReasonId || appointmentData.AppointmentReasonID;
+    const reasonNameOrId = appointmentData.appointmentReasonId || appointmentData.AppointmentReasonID || appointmentData.AppointmentReasonId;
     if (reasonNameOrId) {
-      const practiceId = appointment.PracticeId;
+      const practiceId = appointment.PracticeID;
       const reasonId = await this.lookupAppointmentReasonId(reasonNameOrId, practiceId);
-      appointment.AppointmentReasonId = reasonId;
+      appointment.AppointmentReasonID = reasonId;
     }
 
     // Fallback when AppointmentReasonId is still null (required by Tebra CreateAppointment)
-    if (appointment.AppointmentReasonId == null || appointment.AppointmentReasonId === undefined) {
+    if (appointment.AppointmentReasonID == null || appointment.AppointmentReasonID === undefined) {
       const defaultId = process.env.TEBRA_DEFAULT_APPT_REASON_ID;
       const defaultName = process.env.TEBRA_DEFAULT_APPT_REASON_NAME;
       if (defaultId != null && defaultId !== '' && !isNaN(parseInt(String(defaultId), 10))) {
-        appointment.AppointmentReasonId = parseInt(String(defaultId), 10);
-        console.log(`✅ [TEBRA] Using TEBRA_DEFAULT_APPT_REASON_ID: ${appointment.AppointmentReasonId}`);
+        appointment.AppointmentReasonID = parseInt(String(defaultId), 10);
+        console.log(`✅ [TEBRA] Using TEBRA_DEFAULT_APPT_REASON_ID: ${appointment.AppointmentReasonID}`);
       } else if (defaultName != null && typeof defaultName === 'string' && defaultName.trim() !== '') {
-        const reasonId = await this.lookupAppointmentReasonId(defaultName.trim(), appointment.PracticeId);
+        const reasonId = await this.lookupAppointmentReasonId(defaultName.trim(), appointment.PracticeID);
         if (reasonId != null) {
-          appointment.AppointmentReasonId = reasonId;
+          appointment.AppointmentReasonID = reasonId;
           console.log(`✅ [TEBRA] Using TEBRA_DEFAULT_APPT_REASON_NAME "${defaultName}": ${reasonId}`);
         }
       }
-      if (appointment.AppointmentReasonId == null) {
+      if (appointment.AppointmentReasonID == null) {
         try {
-          const reasonsResult = await this.getAppointmentReasons(appointment.PracticeId);
+          const reasonsResult = await this.getAppointmentReasons(appointment.PracticeID);
           const first = (reasonsResult?.appointmentReasons || [])[0];
           const firstId = first?.id ?? first?.appointmentReasonId;
           if (firstId != null) {
-            appointment.AppointmentReasonId = parseInt(String(firstId), 10);
-            console.log(`✅ [TEBRA] Using first GetAppointmentReasons result: ${appointment.AppointmentReasonId}`);
+            appointment.AppointmentReasonID = parseInt(String(firstId), 10);
+            console.log(`✅ [TEBRA] Using first GetAppointmentReasons result: ${appointment.AppointmentReasonID}`);
           }
         } catch (e) {
           console.warn(`⚠️ [TEBRA] getAppointmentReasons fallback failed:`, e?.message || e);
         }
       }
-      if (appointment.AppointmentReasonId == null) {
+      if (appointment.AppointmentReasonID == null) {
         console.warn(`⚠️ [TEBRA] AppointmentReasonId is still null. Set TEBRA_APPT_REASON_ID_<STATE>, TEBRA_APPT_REASON_NAME_<STATE>, or TEBRA_DEFAULT_APPT_REASON_ID / TEBRA_DEFAULT_APPT_REASON_NAME.`);
       }
     }
 
     // ResourceId: when absent, use ProviderId.
     const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
-    if (!hasResourceId(appointment.ResourceId)) {
-      const pid = appointment.ProviderId;
+    if (!hasResourceId(appointment.ResourceID)) {
+      const pid = appointment.ProviderID;
       if (pid != null && !isNaN(parseInt(String(pid), 10))) {
-        appointment.ResourceId = parseInt(String(pid), 10);
-        console.log(`✅ [TEBRA] Set ResourceId from ProviderId: ${appointment.ResourceId}`);
+        appointment.ResourceID = parseInt(String(pid), 10);
+        console.log(`✅ [TEBRA] Set ResourceID from ProviderID: ${appointment.ResourceID}`);
       }
     }
 
     // ResourceIds: required by Tebra API 4.14.1. Use input array, or [ResourceId], or [ProviderId] as fallback.
     const rids = Array.isArray(appointmentData.resourceIds) && appointmentData.resourceIds.length
       ? appointmentData.resourceIds
-      : (appointment.ResourceId != null ? [appointment.ResourceId] : (appointment.ProviderId != null ? [appointment.ProviderId] : []));
-    appointment.ResourceIds = rids;
-    if (rids.length) console.log(`✅ [TEBRA] ResourceIds: [${rids.join(', ')}]`);
+      : (appointment.ResourceID != null ? [appointment.ResourceID] : (appointment.ProviderID != null ? [appointment.ProviderID] : []));
+    appointment.ResourceIDs = rids.map(parseId).filter((id) => id != null && id !== '');
+    if (appointment.ResourceIDs.length) console.log(`✅ [TEBRA] ResourceIDs: [${appointment.ResourceIDs.join(', ')}]`);
 
     return appointment;
   }
@@ -2368,8 +2357,8 @@ ${appointmentXml}
         console.log('🔍 [TEBRA] Appointment data being sent:', JSON.stringify({
           StartTime: appointment.StartTime,
           EndTime: appointment.EndTime,
-          PatientId: appointment.PatientId,
-          PracticeId: appointment.PracticeId,
+          PatientID: appointment.PatientID,
+          PracticeID: appointment.PracticeID,
           AppointmentType: appointment.AppointmentType,
           AppointmentMode: appointment.AppointmentMode
         }, null, 2));
