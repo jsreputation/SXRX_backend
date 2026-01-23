@@ -1212,17 +1212,24 @@ ${appointmentXml}
         const reasons = reasonsResult.appointmentReasons || [];
         
         // Find the reason by name (case-insensitive)
-        const matchingReason = reasons.find(reason => 
+        const idx = reasons.findIndex(reason => 
           reason.name && reason.name.toLowerCase() === reasonNameOrId.toLowerCase()
         );
+        const matchingReason = idx >= 0 ? reasons[idx] : null;
         
-        if (matchingReason && matchingReason.id) {
-          console.log(`✅ Found appointment reason ID: ${matchingReason.id} for name: "${reasonNameOrId}"`);
-          return parseInt(matchingReason.id);
-        } else {
-          console.log(`⚠️ No appointment reason found for name: "${reasonNameOrId}"`);
-          return null;
+        if (matchingReason && (matchingReason.id != null || matchingReason.appointmentReasonId != null)) {
+          const id = matchingReason.id ?? matchingReason.appointmentReasonId;
+          console.log(`✅ Found appointment reason ID: ${id} for name: "${reasonNameOrId}"`);
+          return parseInt(String(id), 10);
         }
+        // Name matched but API did not return ID: use 1-based index as last-resort (many Tebra setups use sequential IDs)
+        if (matchingReason && idx >= 0) {
+          const fallbackId = idx + 1;
+          console.log(`⚠️ Using 1-based index as fallback AppointmentReasonID for "${reasonNameOrId}": ${fallbackId}. If CreateAppointment fails, set TEBRA_DEFAULT_APPT_REASON_ID to the real ID from Tebra.`);
+          return fallbackId;
+        }
+        console.log(`⚠️ No appointment reason found for name: "${reasonNameOrId}"`);
+        return null;
       }
       
       return null;
