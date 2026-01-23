@@ -321,11 +321,13 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
     });
 
   } catch (error) {
-    console.error('❌ [APPOINTMENT BOOKING] Error booking appointment:', error);
+    console.error('❌ [APPOINTMENT BOOKING] Error booking appointment:', error?.message || error);
+    if (error?.stack) console.error(error.stack);
+    const msg = error?.message || 'Failed to book appointment';
     res.status(500).json({
       success: false,
-      message: 'Failed to book appointment',
-      error: error.message
+      message: msg.includes('AppointmentReasonID') ? msg : 'Failed to book appointment',
+      error: msg
     });
   }
 });

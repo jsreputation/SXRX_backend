@@ -48,13 +48,13 @@ async function main() {
     }
 
     console.log('\nTebra Appointment Reasons (practiceId=%s)\n', practiceId);
-    console.log('  %-6s  %s', 'ID', 'Name');
+    console.log('  ' + 'ID'.padEnd(8) + 'Name');
     console.log('  ' + '-'.repeat(50));
 
     for (const r of reasons) {
-      const id = r.id ?? r.appointmentReasonId ?? '-';
+      const id = String(r.id ?? r.appointmentReasonId ?? '-');
       const name = (r.name || '-').slice(0, 44);
-      console.log('  %-6s  %s', String(id), name);
+      console.log('  ' + id.padEnd(8) + name);
     }
 
     const first = reasons[0];

@@ -2262,6 +2262,11 @@ ${appointmentXml}
       if (this.useRawSOAP) {
         const appointment = await this.buildAppointmentData(appointmentData);
         console.log('🔍 Built appointment data:', JSON.stringify(appointment, null, 2));
+        // Tebra requires AppointmentReasonID; avoid sending without it (causes 500 / "Error translating AppointmentCreate to CreateAppointmentV3Request")
+        if (appointment.AppointmentReasonId == null) {
+          const hint = 'Set TEBRA_DEFAULT_APPT_REASON_ID to a numeric ID from Tebra (Settings > Appointments > Appointment Reasons), or TEBRA_DEFAULT_APPT_REASON_NAME to a reason name that exists (e.g. "Counseling"). Run: node scripts/list-tebra-appointment-reasons.js <practiceId> to list names.';
+          throw new Error(`AppointmentReasonID is required by Tebra but could not be resolved. ${hint}`);
+        }
         // Log the appointment data being sent (especially DateTime fields)
         console.log('🔍 [TEBRA] Appointment data being sent:', JSON.stringify({
           StartTime: appointment.StartTime,
@@ -2269,7 +2274,8 @@ ${appointmentXml}
           PatientId: appointment.PatientId,
           PracticeId: appointment.PracticeId,
           AppointmentType: appointment.AppointmentType,
-          AppointmentMode: appointment.AppointmentMode
+          AppointmentMode: appointment.AppointmentMode,
+          AppointmentReasonId: appointment.AppointmentReasonId
         }, null, 2));
         
         const rawXml = await this.callRawSOAPMethod('CreateAppointment', appointment, {});
@@ -3441,8 +3447,8 @@ ${appointmentXml}
 
   normalizeAppointmentReasonData(reason) {
     return {
-      id: reason.ID || reason.AppointmentReasonID || reason.id,
-      appointmentReasonId: reason.ID || reason.AppointmentReasonID || reason.appointmentReasonId,
+      id: reason.ID || reason.AppointmentReasonID || reason.Id || reason.id,
+      appointmentReasonId: reason.ID || reason.AppointmentReasonID || reason.Id || reason.appointmentReasonId,
       name: reason.Name || reason.name,
       practiceId: reason.PracticeId || reason.practiceId,
       defaultColorCode: reason.DefaultColorCode || reason.defaultColorCode,
@@ -3797,10 +3803,23 @@ ${appointmentXml}
         // Handle GetAppointmentReasons response
         if (methodName === 'GetAppointmentReasons') {
           const reasons = [];
-          const reasonMatches = resultXml.match(/<AppointmentReasonData[^>]*>(.*?)<\/AppointmentReasonData>/gs) ||
-            resultXml.match(/<AppointmentReason[^>]*>(.*?)<\/AppointmentReason>/gs) ||
-            [];
-          for (const reasonXml of reasonMatches) {
+          // Match with or without namespace prefix: <AppointmentReasonData>, <a:AppointmentReasonData>, <AppointmentReason>, etc.
+          const blockRegex = /<(?:[a-zA-Z0-9_]+:)?(AppointmentReasonData|AppointmentReason)[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9_]+:)?\1>/gi;
+          let blockMatch;
+          const blocks = [];
+          while ((blockMatch = blockRegex.exec(resultXml)) !== null) {
+            blocks.push(blockMatch[2]);
+          }
+          if (blocks.length === 0) {
+            let m;
+            const re1 = /<AppointmentReasonData[^>]*>([\s\S]*?)<\/AppointmentReasonData>/gi;
+            while ((m = re1.exec(resultXml)) !== null) { if (m[1]) blocks.push(m[1]); }
+            if (blocks.length === 0) {
+              const re2 = /<AppointmentReason[^>]*>([\s\S]*?)<\/AppointmentReason>/gi;
+              while ((m = re2.exec(resultXml)) !== null) { if (m[1]) blocks.push(m[1]); }
+            }
+          }
+          for (const reasonXml of blocks) {
             const reason = {};
             const fieldMatches = reasonXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
             if (fieldMatches) {
@@ -3809,6 +3828,18 @@ ${appointmentXml}
                 if (m) {
                   const key = m[1].includes(':') ? m[1].split(':').pop() : m[1];
                   reason[key] = m[2];
+                }
+              }
+            }
+            // Fallback: explicitly find ID-like elements (Tebra 4.3.2: AppointmentReasonID)
+            if (reason.ID == null && reason.AppointmentReasonID == null && reason.Id == null) {
+              const idRegex = /<(?:[^:>]+:)?(AppointmentReasonID|ID|Id)>([^<]+)</gi;
+              let idM;
+              while ((idM = idRegex.exec(reasonXml)) !== null) {
+                const v = idM[2]?.trim();
+                if (v && !/^\s*$/.test(v)) {
+                  reason[idM[1]] = v;
+                  break;
                 }
               }
             }
