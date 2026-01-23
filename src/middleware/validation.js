@@ -64,12 +64,30 @@ const validateAppointmentBooking = [
     .withMessage('Last name must be between 1 and 100 characters'),
   
   body('phone')
-    .optional()
-    .isString()
-    .withMessage('Phone must be a string')
-    .trim()
-    .isLength({ min: 10, max: 20 })
-    .withMessage('Phone must be between 10 and 20 characters'),
+    .optional({ nullable: true, checkFalsy: true })
+    .customSanitizer((value) => {
+      // Convert empty string to null for consistency
+      if (value === '' || value === undefined) {
+        return null;
+      }
+      return value;
+    })
+    .custom((value) => {
+      // If phone is provided, it must be a non-empty string
+      if (value !== null && value !== undefined && value !== '') {
+        if (typeof value !== 'string') {
+          throw new Error('Phone must be a string');
+        }
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          return true; // Empty after trim is treated as null (handled by sanitizer)
+        }
+        if (trimmed.length < 10 || trimmed.length > 20) {
+          throw new Error('Phone must be between 10 and 20 characters');
+        }
+      }
+      return true;
+    }),
   
   body('state')
     .notEmpty()
@@ -206,11 +224,20 @@ const validateRegistration = [
     .withMessage('Last name can only contain letters, spaces, hyphens, and apostrophes'),
   
   body('phone')
-    .optional()
+    .optional({ nullable: true, checkFalsy: true })
     .isString()
     .withMessage('Phone must be a string')
-    .matches(/^[\d\s\-\+\(\)]+$/)
-    .withMessage('Phone must be a valid phone number format'),
+    .trim()
+    .custom((value) => {
+      if (!value || value.length === 0) return true;
+      if (value.length < 10 || value.length > 20) {
+        throw new Error('Phone must be between 10 and 20 characters');
+      }
+      if (!/^[\d\s\-\+\(\)]+$/.test(value)) {
+        throw new Error('Phone must be a valid phone number format');
+      }
+      return true;
+    }),
   
   body('state')
     .optional()

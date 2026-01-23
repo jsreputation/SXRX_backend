@@ -440,13 +440,25 @@ class ShopifyStorefrontAuthController {
 
       console.log(`📝 [SHOPIFY REGISTER] Registration attempt from ${getFormattedLocation(clientLocation)}`);
 
-      // Validate required fields - first name, last name, and email are mandatory
+      // Validate required fields - first name, last name, and email are mandatory; phone is optional
       if (!email || !password || !firstName || !lastName) {
         return res.status(400).json({
           success: false,
           message: 'Email, password, first name, and last name are required',
           location: clientLocation
         });
+      }
+
+      // Phone: optional; when provided, validate format
+      const phoneTrimmed = (phone && typeof phone === 'string') ? phone.trim() : '';
+      if (phoneTrimmed.length > 0) {
+        if (phoneTrimmed.length < 10 || phoneTrimmed.length > 20) {
+          return res.status(400).json({
+            success: false,
+            message: 'Phone number must be between 10 and 20 characters',
+            location: clientLocation
+          });
+        }
       }
 
       // State is required for Tebra patient creation
@@ -460,16 +472,17 @@ class ShopifyStorefrontAuthController {
       }
 
       const queries = this.queries;
-      const variables = {
-        input: {
-          email,
-          password,
-          firstName,
-          lastName,
-          phone: phone || null,
-          acceptsMarketing: acceptsMarketing || false,
-        },
+      const input = {
+        email,
+        password,
+        firstName,
+        lastName,
+        acceptsMarketing: acceptsMarketing || false,
       };
+      if (phoneTrimmed.length > 0) {
+        input.phone = phoneTrimmed;
+      }
+      const variables = { input };
 
       const data = await this.makeGraphQLRequest(queries.CUSTOMER_CREATE, variables);
       
