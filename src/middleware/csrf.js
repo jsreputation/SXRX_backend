@@ -78,6 +78,14 @@ function verifyCSRFToken(token, sessionId) {
  * @param {Object} req - Express request object
  * @returns {string} Session identifier
  */
+/**
+ * Normalize email to lowercase for consistent sessionId matching
+ */
+function normalizeEmail(email) {
+  if (!email || typeof email !== 'string') return email;
+  return email.toLowerCase().trim();
+}
+
 function getSessionId(req) {
   // Prioritize user ID from JWT, then email from body/query, then IP
   // Note: req.body.email is checked early because CSRF runs before auth middleware
@@ -87,25 +95,25 @@ function getSessionId(req) {
   }
   
   if (req.user && req.user.email) {
-    return `email:${req.user.email}`;
+    return `email:${normalizeEmail(req.user.email)}`;
   }
   
   // Check body email (available after express.json() parsing)
   if (req.body && req.body.email) {
-    return `email:${req.body.email}`;
+    return `email:${normalizeEmail(req.body.email)}`;
   }
   
   // Check body.patientEmail or body.patientSummary.Email (for appointment booking)
   if (req.body) {
     const email = req.body.patientEmail || req.body.patientSummary?.Email || req.body.patient?.email;
     if (email) {
-      return `email:${email}`;
+      return `email:${normalizeEmail(email)}`;
     }
   }
   
   // Check query parameter (for CSRF token endpoint)
   if (req.query && req.query.email) {
-    return `email:${req.query.email}`;
+    return `email:${normalizeEmail(req.query.email)}`;
   }
   
   // Fallback to IP address
@@ -196,10 +204,18 @@ function csrfProtection(options = {}) {
     const isValid = verifyCSRFToken(token, sessionId);
     
     if (!isValid) {
+      // Log more details for debugging
+      const tokenPreview = token ? token.substring(0, 20) + '...' : 'missing';
       logger.warn('[CSRF] Token verification failed', {
         path: req.path,
         method: req.method,
-        sessionId: sessionId.substring(0, 20) + '...'
+        sessionId: sessionId.substring(0, 30),
+        tokenPreview: tokenPreview,
+        hasTokenFromHeader: !!req.headers[CSRF_TOKEN_HEADER.toLowerCase()] || !!req.headers['x-csrf-token'],
+        hasTokenFromCookie: !!req.cookies?.[CSRF_TOKEN_COOKIE],
+        bodyEmail: req.body?.email || req.body?.patientEmail || req.body?.patientSummary?.Email,
+        queryEmail: req.query?.email,
+        userEmail: req.user?.email
       });
       
       return res.status(403).json({
@@ -250,9 +266,10 @@ function getCSRFToken(req, res) {
   let sessionId = getSessionId(req);
   
   // If email is provided in query/body, use it for sessionId to match verification
+  // Normalize email to ensure consistency
   const email = req.query.email || req.body?.email;
   if (email) {
-    sessionId = `email:${email}`;
+    sessionId = `email:${normalizeEmail(email)}`;
   }
   
   const token = generateCSRFToken(sessionId);
