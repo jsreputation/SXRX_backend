@@ -45,51 +45,22 @@ class CacheWarmingService {
 
   /**
    * Warm availability cache for common states
+   * Note: GetAvailability is not available in Tebra SOAP 2.1 API
+   * This method is skipped gracefully - availability is fetched on-demand when needed
    */
   async warmAvailabilityCache() {
     if (!cacheService.isAvailable()) return;
     
     try {
       logger.info('[CACHE_WARMING] Warming availability cache');
+      logger.warn('[CACHE_WARMING] GetAvailability is not available in Tebra SOAP 2.1 API - skipping availability cache warming');
+      logger.info('[CACHE_WARMING] Availability will be fetched on-demand when requested');
       
-      const commonStates = ['CA', 'TX', 'WA', 'NY', 'FL'];
-      const providerMapping = require('../config/providerMapping');
+      // GetAvailability is not a valid method in Tebra SOAP 2.1 API
+      // Availability is fetched on-demand using GetAppointments or other methods
+      // when users request appointment slots
       
-      for (const state of commonStates) {
-        const mapping = providerMapping[state];
-        if (mapping && mapping.practiceId) {
-          try {
-            const fromDate = new Date().toISOString().split('T')[0];
-            const toDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-            
-            const availability = await tebraService.getAvailability({
-              practiceId: mapping.practiceId,
-              providerId: mapping.defaultProviderId,
-              isAvailable: true,
-              fromDate,
-              toDate
-            });
-            
-            const cacheKey = cacheService.generateKey('availability', {
-              practiceId: mapping.practiceId,
-              providerId: mapping.defaultProviderId,
-              state,
-              fromDate,
-              toDate
-            });
-            
-            await cacheService.set(cacheKey, availability, 300); // 5 minutes
-            logger.debug('[CACHE_WARMING] Warmed availability cache', { state, practiceId: mapping.practiceId });
-          } catch (error) {
-            logger.warn('[CACHE_WARMING] Failed to warm availability cache for state', {
-              state,
-              error: error.message
-            });
-          }
-        }
-      }
-      
-      logger.info('[CACHE_WARMING] Availability cache warming completed');
+      logger.info('[CACHE_WARMING] Availability cache warming completed (skipped - method not available)');
     } catch (error) {
       logger.error('[CACHE_WARMING] Failed to warm availability cache', { error: error.message });
     }

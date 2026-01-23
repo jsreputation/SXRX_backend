@@ -289,7 +289,7 @@ SHOPIFY_API_VERSION=2024-01
 - **Service Management:** getServiceLocations, getProcedureCode, getTransactions, updatePrimaryPatientCase
 - **Document Management:** createDocument, deleteDocument, getDocuments (database workaround), getDocumentContent (database workaround)
 - **Practice & Provider:** getPractices, getProviders
-- **Availability:** getAvailability
+- **Availability:** getAvailability (⚠️ Not available in SOAP 2.1 - returns empty result for backward compatibility)
 - **Appointment Reasons:** createAppointmentReason, getAppointmentReasons
 
 **Key Features:**
