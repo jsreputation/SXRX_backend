@@ -383,11 +383,18 @@ router.delete('/:appointmentId', async (req, res) => {
       });
     }
 
-    // Update appointment status to Cancelled in Tebra
+    // Update appointment status to Cancelled in Tebra (include required fields per Tebra guide)
     const updateData = {
-      AppointmentId: appointmentId,
-      AppointmentStatus: 'Cancelled',
-      Notes: (appointment.Notes || appointment.notes || '') + `\nCancelled: ${reason || 'Cancelled by patient'}`
+      appointmentStatus: 'Cancelled',
+      notes: (appointment.notes || '') + `\nCancelled: ${reason || 'Cancelled by patient'}`,
+      appointmentName: appointment.appointmentName || 'Appointment',
+      startTime: appointment.startDateTime || appointment.startTime,
+      endTime: appointment.endDateTime || appointment.endTime,
+      patientId: appointment.patientId,
+      serviceLocationId: appointment.serviceLocation?.id || appointment.serviceLocationId,
+      appointmentReasonId: appointment.appointmentReasonId,
+      resourceId: appointment.resourceId || appointment.providerId,
+      maxAttendees: appointment.maxAttendees || 1
     };
 
     // Try to update appointment status
@@ -502,7 +509,7 @@ router.put('/:appointmentId/reschedule', async (req, res) => {
     }
 
     // Get original appointment to preserve details
-    const originalAppointment = await tebraService.getAppointment({ appointmentId });
+    const originalAppointment = await tebraService.getAppointment(appointmentId);
     
     if (!originalAppointment) {
       return res.status(404).json({
@@ -516,9 +523,16 @@ router.put('/:appointmentId/reschedule', async (req, res) => {
 
     // Cancel original appointment
     const cancelUpdateData = {
-      AppointmentId: appointmentId,
-      AppointmentStatus: 'Cancelled',
-      Notes: (originalAppointment.Notes || originalAppointment.notes || '') + `\nCancelled: Rescheduled to ${newStartTime}. ${reason || ''}`
+      appointmentStatus: 'Cancelled',
+      notes: (originalAppointment.notes || '') + `\nCancelled: Rescheduled to ${newStartTime}. ${reason || ''}`,
+      appointmentName: originalAppointment.appointmentName || 'Appointment',
+      startTime: originalAppointment.startDateTime || originalAppointment.startTime,
+      endTime: originalAppointment.endDateTime || originalAppointment.endTime,
+      patientId: originalAppointment.patientId,
+      serviceLocationId: originalAppointment.serviceLocation?.id || originalAppointment.serviceLocationId,
+      appointmentReasonId: originalAppointment.appointmentReasonId,
+      resourceId: originalAppointment.resourceId || originalAppointment.providerId,
+      maxAttendees: originalAppointment.maxAttendees || 1
     };
     
     try {
@@ -535,26 +549,32 @@ router.put('/:appointmentId/reschedule', async (req, res) => {
 
     // Create new appointment with same details
     // Determine state from original appointment or use default
-    const originalState = originalAppointment.State || 
-                          originalAppointment.state || 
+    const originalPracticeId = originalAppointment.practice?.id || originalAppointment.practiceId;
+    const originalProviderId = originalAppointment.providerId;
+    const originalServiceLocationId = originalAppointment.serviceLocation?.id || originalAppointment.serviceLocationId;
+    const originalState = originalAppointment.state || 
+                          originalAppointment.State || 
                           Object.keys(providerMapping).find(state => 
-                            providerMapping[state].practiceId === (originalAppointment.PracticeID || originalAppointment.practiceId)
+                            String(providerMapping[state].practiceId) === String(originalPracticeId)
                           ) || 'CA';
     
     const mapping = providerMapping[originalState.toUpperCase()] || providerMapping['CA'];
     const newAppointment = await tebraService.createAppointment({
-      appointmentName: originalAppointment.AppointmentName || originalAppointment.appointmentName || 'Telemedicine Consultation',
+      appointmentName: originalAppointment.appointmentName || 'Telemedicine Consultation',
       appointmentStatus: 'Scheduled',
-      appointmentType: 'P',
-      appointmentMode: 'Telehealth',
+      appointmentType: originalAppointment.appointmentType || 'P',
+      appointmentMode: originalAppointment.appointmentMode || 'Telehealth',
       startTime: newStart.toISOString(),
       endTime: newEnd.toISOString(),
-      patientId: originalAppointment.PatientID || originalAppointment.patientId || originalAppointment.Patient?.ID,
-      practiceId: mapping?.practiceId || originalAppointment.PracticeID || originalAppointment.practiceId,
-      providerId: mapping?.defaultProviderId || originalAppointment.ProviderID || originalAppointment.providerId,
-      serviceLocationId: mapping?.serviceLocationId,
-      appointmentReasonId: mapping?.appointmentReasonId,
-      notes: `Rescheduled from ${originalAppointment.StartTime || originalAppointment.startTime || originalAppointment.start_date}. ${reason || ''}`,
+      patientId: originalAppointment.patientId || originalAppointment.patient?.id,
+      patientFirstName: originalAppointment.patient?.firstName,
+      patientLastName: originalAppointment.patient?.lastName,
+      patientEmail: originalAppointment.patient?.email,
+      practiceId: mapping?.practiceId || originalPracticeId,
+      providerId: mapping?.defaultProviderId || originalProviderId,
+      serviceLocationId: mapping?.serviceLocationId || originalServiceLocationId,
+      appointmentReasonId: mapping?.appointmentReasonId || originalAppointment.appointmentReasonId,
+      notes: `Rescheduled from ${originalAppointment.startDateTime || originalAppointment.startTime || originalAppointment.start_date}. ${reason || ''}`,
       isRecurring: false
     });
 
@@ -570,8 +590,8 @@ router.put('/:appointmentId/reschedule', async (req, res) => {
 
     // Invalidate availability cache (both old and new slots affected)
     const cacheService = require('../services/cacheService');
-    const state = req.body?.state || originalAppointment?.State || 'CA';
-    const providerId = originalAppointment?.ProviderID || originalAppointment?.ProviderId || mapping?.defaultProviderId;
+    const state = req.body?.state || originalState || 'CA';
+    const providerId = originalProviderId || mapping?.defaultProviderId;
     if (state && providerId) {
       await cacheService.invalidateAvailability(state.toUpperCase(), providerId);
       logger.info('[APPOINTMENT] Invalidated availability cache after reschedule', { state, providerId });

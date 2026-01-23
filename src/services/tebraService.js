@@ -1350,7 +1350,7 @@ ${appointmentXml}
         return parsed;
       })(),
       ResourceId: appointmentData.resourceId || appointmentData.ResourceId || null,
-      // ResourceIds: omit to avoid v3 translation errors; use ResourceId only
+      // ResourceIds: required by Tebra API 4.14.1; set from input or [ResourceId] or [ProviderId]
       // Convert ServiceLocationId - Tebra requires it to be > 0, so use 1 (practice default) if not provided
       ServiceLocationId: (() => {
         const serviceLocationId = appointmentData.serviceLocationId || appointmentData.ServiceLocationID || appointmentData.ServiceLocationId;
@@ -1375,41 +1375,25 @@ ${appointmentXml}
       StartTime: appointmentData.startTime || appointmentData.StartTime,
       UpdatedAt: appointmentData.updatedAt || appointmentData.UpdatedAt || undefined,
       UpdatedBy: appointmentData.updatedBy || appointmentData.UpdatedBy || null
-      // PatientSummary: omit when PatientId is provided to avoid "Error translating AppointmentCreate to CreateAppointmentV3Request".
-      // Tebra expects PatientId OR PatientSummary; sending both can break the v2→v3 translation layer.
     };
 
-    // Add PatientSummary only when PatientId is NOT provided (avoids Tebra v2→v3 translation error).
-    const hasPatientId = !!(appointmentData.patientId || appointmentData.PatientID || appointmentData.PatientId);
-    if (!hasPatientId) {
-      const fromInput = appointmentData.patientSummary || appointmentData.PatientSummary;
-      appointment.PatientSummary = fromInput ? {
-        DateOfBirth: fromInput.dateOfBirth || fromInput.DateOfBirth,
-        Email: fromInput.email || fromInput.Email,
-        FirstName: fromInput.firstName || fromInput.FirstName,
-        GenderId: fromInput.genderId || fromInput.GenderId,
-        Guid: fromInput.guid || fromInput.Guid,
-        HomePhone: fromInput.homePhone || fromInput.HomePhone,
-        LastName: fromInput.lastName || fromInput.LastName,
-        MiddleName: fromInput.middleName || fromInput.MiddleName,
-        MobilePhone: fromInput.mobilePhone || fromInput.MobilePhone,
-        OtherEmail: fromInput.otherEmail || fromInput.OtherEmail,
-        OtherPhone: fromInput.otherPhone || fromInput.OtherPhone,
-        PatientId: fromInput.patientId || fromInput.PatientID || fromInput.PatientId,
-        PracticeId: fromInput.practiceId || fromInput.PracticeID || fromInput.PracticeId || '1',
-        PreferredEmailType: fromInput.preferredEmailType || fromInput.PreferredEmailType,
-        PreferredPhoneType: fromInput.preferredPhoneType || fromInput.PreferredPhoneType,
-        WorkEmail: fromInput.workEmail || fromInput.WorkEmail,
-        WorkPhone: fromInput.workPhone || fromInput.WorkPhone,
-        Status: fromInput.status || fromInput.Status
-      } : {
-        FirstName: appointmentData.patientFirstName || appointmentData.PatientFirstName || 'Unknown',
-        LastName: appointmentData.patientLastName || appointmentData.PatientLastName || 'Patient',
-        Email: appointmentData.patientEmail || appointmentData.PatientEmail || 'unknown@example.com',
-        PatientId: null,
-        PracticeId: appointmentData.practiceId || appointmentData.PracticeID || appointmentData.PracticeId || '1'
-      };
-    }
+    // PatientSummary: required by Tebra API 4.14.1 (Create Appointment). Always include per guide.
+    const fromInput = appointmentData.patientSummary || appointmentData.PatientSummary;
+    const ps = {
+      PatientId: appointment.PatientId,
+      PracticeId: appointment.PracticeId,
+      FirstName: fromInput?.FirstName ?? fromInput?.firstName ?? appointmentData.patientFirstName ?? appointmentData.PatientFirstName ?? 'Unknown',
+      LastName: fromInput?.LastName ?? fromInput?.lastName ?? appointmentData.patientLastName ?? appointmentData.PatientLastName ?? 'Patient',
+      Email: fromInput?.Email ?? fromInput?.email ?? appointmentData.patientEmail ?? appointmentData.PatientEmail ?? 'unknown@example.com'
+    };
+    const opt = (a, b, c, d) => { const v = a ?? b ?? c ?? d; if (v != null && v !== '') return v; return undefined; };
+    if (opt(fromInput?.MiddleName, fromInput?.middleName, appointmentData.patientMiddleName, appointmentData.PatientMiddleName) != null) ps.MiddleName = opt(fromInput?.MiddleName, fromInput?.middleName, appointmentData.patientMiddleName, appointmentData.PatientMiddleName);
+    if (opt(fromInput?.DateOfBirth, fromInput?.dateOfBirth, appointmentData.patientDateOfBirth, appointmentData.PatientDateOfBirth) != null) ps.DateOfBirth = opt(fromInput?.DateOfBirth, fromInput?.dateOfBirth, appointmentData.patientDateOfBirth, appointmentData.PatientDateOfBirth);
+    if (opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone, appointmentData.PatientHomePhone) != null) ps.HomePhone = opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone, appointmentData.PatientHomePhone);
+    if (opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone, appointmentData.PatientWorkPhone) != null) ps.WorkPhone = opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone, appointmentData.PatientWorkPhone);
+    if (opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone, appointmentData.PatientMobilePhone) != null) ps.MobilePhone = opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone, appointmentData.PatientMobilePhone);
+    if (opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId) != null) ps.GenderId = opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId, appointmentData.PatientGenderId);
+    appointment.PatientSummary = ps;
 
     // Add PatientSummaries if provided (for group appointments)
     if (appointmentData.patientSummaries && Array.isArray(appointmentData.patientSummaries)) {
@@ -1498,7 +1482,7 @@ ${appointmentXml}
       }
     }
 
-    // ResourceId: when absent, use ProviderId. Do NOT set ResourceIds (v3 translator can fail on array format).
+    // ResourceId: when absent, use ProviderId.
     const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
     if (!hasResourceId(appointment.ResourceId)) {
       const pid = appointment.ProviderId;
@@ -1508,17 +1492,14 @@ ${appointmentXml}
       }
     }
 
-    // Minimal payload for v3: only fields the CreateAppointmentV3Request translator accepts.
-    const ALLOWED = ['AppointmentMode','AppointmentName','AppointmentReasonId','AppointmentStatus','AppointmentType','EndTime','IsRecurring','Notes','PatientId','PracticeId','ProviderId','ResourceId','ServiceLocationId','StartTime','WasCreatedOnline'];
-    const out = {};
-    for (const k of ALLOWED) {
-      const v = appointment[k];
-      if (v === undefined) continue;
-      if (v === null && ['AppointmentReasonId','ResourceId','PatientId','PracticeId','ProviderId','ServiceLocationId'].includes(k)) continue;
-      if ((v === null || v === '') && k === 'Notes') continue;
-      out[k] = v;
-    }
-    return out;
+    // ResourceIds: required by Tebra API 4.14.1. Use input array, or [ResourceId], or [ProviderId] as fallback.
+    const rids = Array.isArray(appointmentData.resourceIds) && appointmentData.resourceIds.length
+      ? appointmentData.resourceIds
+      : (appointment.ResourceId != null ? [appointment.ResourceId] : (appointment.ProviderId != null ? [appointment.ProviderId] : []));
+    appointment.ResourceIds = rids;
+    if (rids.length) console.log(`✅ [TEBRA] ResourceIds: [${rids.join(', ')}]`);
+
+    return appointment;
   }
 
   // Build appointment fields for GetAppointments SOAP call
@@ -2650,29 +2631,61 @@ ${appointmentXml}
       // Coerce numeric string IDs to integers to match SOAP type expectations
       const appointmentIdToUse = (typeof appointmentId === 'string' && /^\d+$/.test(appointmentId)) ? parseInt(appointmentId, 10) : appointmentId;
 
+      const getUpdate = (camel, pascal) => {
+        if (!updates || typeof updates !== 'object') return undefined;
+        return updates[camel] ?? updates[pascal];
+      };
+
+      // If required fields are missing, fetch base appointment to fill gaps per Tebra guide 4.19.1
+      const requiredFieldsPresent = [
+        getUpdate('appointmentStatus', 'AppointmentStatus'),
+        getUpdate('serviceLocationId', 'ServiceLocationId'),
+        getUpdate('startTime', 'StartTime'),
+        getUpdate('endTime', 'EndTime'),
+        getUpdate('appointmentReasonId', 'AppointmentReasonId'),
+        getUpdate('resourceId', 'ResourceId'),
+        getUpdate('patientId', 'PatientId'),
+        getUpdate('appointmentName', 'AppointmentName'),
+        getUpdate('maxAttendees', 'MaxAttendees')
+      ].every(v => v != null && v !== '');
+
+      let baseAppointment = null;
+      if (!requiredFieldsPresent) {
+        try {
+          baseAppointment = await this.getAppointment(appointmentIdToUse);
+        } catch (baseErr) {
+          console.warn('⚠️ [TEBRA SERVICE] Failed to fetch base appointment for update:', baseErr?.message || baseErr);
+        }
+      }
+
+      const baseServiceLocationId = baseAppointment?.serviceLocation?.id || baseAppointment?.serviceLocationId;
+      const baseStartTime = baseAppointment?.startDateTime || baseAppointment?.startTime;
+      const baseEndTime = baseAppointment?.endDateTime || baseAppointment?.endTime;
+      const baseResourceId = baseAppointment?.resourceId || baseAppointment?.providerId;
+
       // Build Appointment payload
       const appointmentPayload = {
         Appointment: {
           AppointmentId: appointmentIdToUse,
-          AppointmentMode: updates.appointmentMode,
-          AppointmentName: updates.appointmentName,
-          AppointmentReasonId: updates.appointmentReasonId,
-          AppointmentStatus: updates.appointmentStatus,
-          EndTime: updates.endTime,
-          InsurancePolicyAuthorizationId: updates.insurancePolicyAuthorizationId,
-          IsRecurring: updates.isRecurring,
-          MaxAttendees: updates.maxAttendees,
-          Notes: updates.notes,
-          OccurrenceId: updates.occurrenceId,
-          PatientCaseId: updates.patientCaseId,
-          PatientId: updates.patientId,
-          ProviderId: updates.providerId || '1',
-          ResourceId: updates.resourceId,
-          ResourceIds: updates.resourceIds,
-          ServiceLocationId: updates.serviceLocationId,
-          StartTime: updates.startTime,
-          UpdatedAt: updates.updatedAt,
-          UpdatedBy: updates.updatedBy
+          AppointmentMode: getUpdate('appointmentMode', 'AppointmentMode'),
+          AppointmentName: getUpdate('appointmentName', 'AppointmentName') ?? baseAppointment?.appointmentName,
+          AppointmentReasonId: getUpdate('appointmentReasonId', 'AppointmentReasonId') ?? baseAppointment?.appointmentReasonId,
+          AppointmentStatus: getUpdate('appointmentStatus', 'AppointmentStatus') ?? baseAppointment?.appointmentStatus,
+          EndTime: getUpdate('endTime', 'EndTime') ?? baseEndTime,
+          InsurancePolicyAuthorizationId: getUpdate('insurancePolicyAuthorizationId', 'InsurancePolicyAuthorizationId'),
+          IsRecurring: getUpdate('isRecurring', 'IsRecurring'),
+          MaxAttendees: getUpdate('maxAttendees', 'MaxAttendees') ?? baseAppointment?.maxAttendees ?? 1,
+          Notes: getUpdate('notes', 'Notes'),
+          OccurrenceId: getUpdate('occurrenceId', 'OccurrenceId'),
+          PatientCaseId: getUpdate('patientCaseId', 'PatientCaseId'),
+          PatientId: getUpdate('patientId', 'PatientId') ?? baseAppointment?.patientId,
+          ProviderId: getUpdate('providerId', 'ProviderId') || baseAppointment?.providerId || '1',
+          ResourceId: getUpdate('resourceId', 'ResourceId') ?? baseResourceId,
+          ResourceIds: getUpdate('resourceIds', 'ResourceIds'),
+          ServiceLocationId: getUpdate('serviceLocationId', 'ServiceLocationId') ?? baseServiceLocationId,
+          StartTime: getUpdate('startTime', 'StartTime') ?? baseStartTime,
+          UpdatedAt: getUpdate('updatedAt', 'UpdatedAt'),
+          UpdatedBy: getUpdate('updatedBy', 'UpdatedBy')
         }
       };
 
