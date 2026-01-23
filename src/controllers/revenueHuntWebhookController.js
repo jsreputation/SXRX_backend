@@ -135,6 +135,7 @@ async function getAvailableSlots(mapping, options = {}) {
     const rawAvailability = await tebraService.getAvailability({
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
+      state: mapping.state || 'CA',
       isAvailable: true,
       fromDate: options.fromDate || new Date().toISOString().split('T')[0],
       toDate: options.toDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]

@@ -1458,12 +1458,57 @@ ${appointmentXml}
       };
     }
 
-    // Look up appointment reason ID if a name was provided instead of an ID
+    // Look up appointment reason ID if a name or ID was provided
     const reasonNameOrId = appointmentData.appointmentReasonId || appointmentData.AppointmentReasonId || appointmentData.AppointmentReasonID;
     if (reasonNameOrId) {
       const practiceId = appointment.PracticeId;
       const reasonId = await this.lookupAppointmentReasonId(reasonNameOrId, practiceId);
       appointment.AppointmentReasonId = reasonId;
+    }
+
+    // Fallback when AppointmentReasonId is still null (required by Tebra CreateAppointment)
+    if (appointment.AppointmentReasonId == null || appointment.AppointmentReasonId === undefined) {
+      const defaultId = process.env.TEBRA_DEFAULT_APPT_REASON_ID;
+      const defaultName = process.env.TEBRA_DEFAULT_APPT_REASON_NAME;
+      if (defaultId != null && defaultId !== '' && !isNaN(parseInt(String(defaultId), 10))) {
+        appointment.AppointmentReasonId = parseInt(String(defaultId), 10);
+        console.log(`✅ [TEBRA] Using TEBRA_DEFAULT_APPT_REASON_ID: ${appointment.AppointmentReasonId}`);
+      } else if (defaultName != null && typeof defaultName === 'string' && defaultName.trim() !== '') {
+        const reasonId = await this.lookupAppointmentReasonId(defaultName.trim(), appointment.PracticeId);
+        if (reasonId != null) {
+          appointment.AppointmentReasonId = reasonId;
+          console.log(`✅ [TEBRA] Using TEBRA_DEFAULT_APPT_REASON_NAME "${defaultName}": ${reasonId}`);
+        }
+      }
+      if (appointment.AppointmentReasonId == null) {
+        try {
+          const reasonsResult = await this.getAppointmentReasons(appointment.PracticeId);
+          const first = (reasonsResult?.appointmentReasons || [])[0];
+          const firstId = first?.id ?? first?.appointmentReasonId;
+          if (firstId != null) {
+            appointment.AppointmentReasonId = parseInt(String(firstId), 10);
+            console.log(`✅ [TEBRA] Using first GetAppointmentReasons result: ${appointment.AppointmentReasonId}`);
+          }
+        } catch (e) {
+          console.warn(`⚠️ [TEBRA] getAppointmentReasons fallback failed:`, e?.message || e);
+        }
+      }
+      if (appointment.AppointmentReasonId == null) {
+        console.warn(`⚠️ [TEBRA] AppointmentReasonId is still null. Set TEBRA_APPT_REASON_ID_<STATE>, TEBRA_APPT_REASON_NAME_<STATE>, or TEBRA_DEFAULT_APPT_REASON_ID / TEBRA_DEFAULT_APPT_REASON_NAME.`);
+      }
+    }
+
+    // ResourceID/ResourceIDs: Tebra requires them (July 2025). When absent, use ProviderId so the SOAP includes valid values.
+    const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
+    const hasResourceIds = Array.isArray(appointment.ResourceIds) && appointment.ResourceIds.length > 0;
+    if (!hasResourceId(appointment.ResourceId) && !hasResourceIds) {
+      const pid = appointment.ProviderId;
+      if (pid != null && !isNaN(parseInt(String(pid), 10))) {
+        const p = parseInt(String(pid), 10);
+        appointment.ResourceId = p;
+        appointment.ResourceIds = [p];
+        console.log(`✅ [TEBRA] Set ResourceId/ResourceIds from ProviderId: ${p}`);
+      }
     }
 
     return appointment;
@@ -1577,6 +1622,8 @@ ${appointmentXml}
       // Basic filters - removed PatientID filter to get all appointments
       PatientFullName: safeGet(options, 'patientFullName'),
       PracticeName: safeGet(options, 'practiceName'),
+      PracticeID: safeGet(options, 'practiceId'),
+      ProviderID: safeGet(options, 'providerId'),
       ServiceLocationName: safeGet(options, 'serviceLocationName'),
       ResourceName: safeGet(options, 'resourceName'),
       // Date filters
@@ -2114,7 +2161,6 @@ ${appointmentXml}
 
   // Appointments
   async getAppointments(options = {}) {
-    console.log('asdfasdfasdfasdfasdfasdf');
     try {
       console.log('🔍 [GET APPOINTMENTS] Starting with options:', options);
       

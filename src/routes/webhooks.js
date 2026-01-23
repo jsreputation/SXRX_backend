@@ -265,6 +265,7 @@ router.get('/availability/:state', validateAvailabilityState, async (req, res) =
     const rawAvailability = await tebraService.getAvailability({
       practiceId: mapping.practiceId,
       providerId: providerId || mapping.defaultProviderId,
+      state: state.toUpperCase(),
       isAvailable: true,
       fromDate: fromDate || new Date().toISOString().split('T')[0],
       toDate: toDate || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]

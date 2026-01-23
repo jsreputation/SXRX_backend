@@ -38,6 +38,7 @@ class AvailabilityCalculator {
         providerId,
         fromDate,
         toDate,
+        state: options.state,
         tebraService
       });
 
@@ -79,8 +80,10 @@ class AvailabilityCalculator {
 
   /**
    * Get existing appointments using GetAppointments
+   * Excludes Cancelled/Canceled. Uses startDateTime/endDateTime (full ISO) for conflict checks.
+   * Merges in recently-booked overlay (Redis, TTL 2min) to handle Tebra eventual consistency.
    */
-  async getExistingAppointments({ practiceId, providerId, fromDate, toDate, tebraService }) {
+  async getExistingAppointments({ practiceId, providerId, fromDate, toDate, state, tebraService }) {
     try {
       const appointments = await tebraService.getAppointments({
         practiceId,
@@ -89,14 +92,33 @@ class AvailabilityCalculator {
         endDate: toDate
       });
 
-      // Extract appointment time slots
-      const existingSlots = (appointments.appointments || []).map(apt => ({
-        startTime: apt.StartTime || apt.startTime,
-        endTime: apt.EndTime || apt.endTime,
-        startDate: apt.StartDate || apt.startDate,
+      const list = appointments.appointments || [];
+      const statusOk = (apt) => {
+        const s = (apt.AppointmentStatus || apt.appointmentStatus || '').toString().toLowerCase();
+        return s !== 'cancelled' && s !== 'canceled';
+      };
+
+      // Prefer full ISO datetimes (startDateTime/endDateTime or StartTime/EndTime); exclude cancelled
+      let existingSlots = list.filter(statusOk).map(apt => ({
+        startTime: apt.startDateTime || apt.StartTime || apt.startTime,
+        endTime: apt.endDateTime || apt.EndTime || apt.endTime,
+        startDate: apt.startDate || apt.StartDate,
         providerId: apt.ProviderID || apt.providerId,
         practiceId: apt.PracticeID || apt.practiceId
       }));
+
+      // Merge recently-booked overlay (covers Tebra eventual consistency)
+      if (state && providerId != null) {
+        try {
+          const cacheService = require('./cacheService');
+          const overlay = await cacheService.getBookedSlots(state, providerId);
+          for (const { start, end } of overlay || []) {
+            if (start && end) existingSlots.push({ startTime: start, endTime: end, startDate: (start || '').toString().slice(0, 10), providerId, practiceId });
+          }
+        } catch (e) {
+          logger.debug('[AVAILABILITY_CALCULATOR] getBookedSlots overlay failed', { error: e?.message });
+        }
+      }
 
       logger.debug('[AVAILABILITY_CALCULATOR] Found existing appointments', {
         count: existingSlots.length,
@@ -176,6 +198,7 @@ class AvailabilityCalculator {
 
   /**
    * Filter out slots that conflict with existing appointments
+   * Uses full ISO start/end; if apt.endTime is missing, assumes 30min after apt.startTime.
    */
   filterConflictingSlots(potentialSlots, existingAppointments) {
     const availableSlots = [];
@@ -183,14 +206,20 @@ class AvailabilityCalculator {
     for (const slot of potentialSlots) {
       const slotStart = new Date(slot.startTime);
       const slotEnd = new Date(slot.endTime);
+      if (isNaN(slotStart.getTime()) || isNaN(slotEnd.getTime())) continue;
 
-      // Check if this slot conflicts with any existing appointment
       const hasConflict = existingAppointments.some(apt => {
-        const aptStart = new Date(apt.startTime || apt.startDate);
-        const aptEnd = new Date(apt.endTime || apt.startDate);
+        const rawStart = apt.startTime || apt.startDate;
+        if (!rawStart) return false;
+        const aptStart = new Date(rawStart);
+        if (isNaN(aptStart.getTime())) return false;
+        // Prefer full end; if missing, assume 30min so we don't under-exclude
+        const rawEnd = apt.endTime || apt.endDateTime || apt.EndTime;
+        const aptEnd = (rawEnd && !isNaN(new Date(rawEnd).getTime()))
+          ? new Date(rawEnd)
+          : new Date(aptStart.getTime() + 30 * 60 * 1000);
 
-        // Check for overlap
-        return (slotStart < aptEnd && slotEnd > aptStart);
+        return slotStart < aptEnd && slotEnd > aptStart;
       });
 
       if (!hasConflict) {

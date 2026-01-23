@@ -225,7 +225,8 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
     // Always enforce 30-minute appointment duration
     const endDate = new Date(startDate.getTime() + 30 * 60000); // Always 30 minutes
 
-    // Create appointment in Tebra
+    // Create appointment in Tebra (pass Tebra-required: serviceLocationId, appointmentReasonId; tebraService sets ResourceId/ResourceIds when absent)
+    // Pass logged-in user's firstname, lastname, email for PatientSummary (createPatient/updatePatient already use these for the patient record)
     const appointmentData = {
       appointmentName: appointmentName || 'Telemedicine Consultation',
       appointmentStatus: 'Scheduled',
@@ -234,8 +235,13 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString(),
       patientId: resolvedPatientId,
+      patientFirstName: firstName || 'Guest',
+      patientLastName: lastName || 'Customer',
+      patientEmail: patientEmail || undefined,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
+      serviceLocationId: mapping.serviceLocationId,
+      appointmentReasonId: mapping.appointmentReasonId,
       notes: `Consultation scheduled from questionnaire. Product: ${productId || 'N/A'}, Type: ${purchaseType || 'N/A'}`,
       isRecurring: false
     };
@@ -261,8 +267,10 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
 
     console.log(`✅ [APPOINTMENT BOOKING] Created appointment ${appointmentId} in Tebra for patient ${resolvedPatientId}`);
 
-    // Invalidate availability cache for this state/provider
     const cacheService = require('../services/cacheService');
+    // Record just-booked slot so availability excludes it immediately (covers Tebra eventual consistency)
+    await cacheService.addBookedSlot(state.toUpperCase(), mapping.defaultProviderId, appointmentData.startTime, appointmentData.endTime);
+    // Invalidate availability cache for this state/provider
     await cacheService.invalidateAvailability(state.toUpperCase(), mapping.defaultProviderId);
     logger.info('[APPOINTMENT BOOKING] Invalidated availability cache', { state, providerId: mapping.defaultProviderId });
 
@@ -544,6 +552,8 @@ router.put('/:appointmentId/reschedule', async (req, res) => {
       patientId: originalAppointment.PatientID || originalAppointment.patientId || originalAppointment.Patient?.ID,
       practiceId: mapping?.practiceId || originalAppointment.PracticeID || originalAppointment.practiceId,
       providerId: mapping?.defaultProviderId || originalAppointment.ProviderID || originalAppointment.providerId,
+      serviceLocationId: mapping?.serviceLocationId,
+      appointmentReasonId: mapping?.appointmentReasonId,
       notes: `Rescheduled from ${originalAppointment.StartTime || originalAppointment.startTime || originalAppointment.start_date}. ${reason || ''}`,
       isRecurring: false
     });

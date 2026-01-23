@@ -271,13 +271,46 @@ class CacheService {
    */
   async invalidateAvailability(state, providerId = null) {
     if (providerId) {
-      // Invalidate specific provider
+      // Invalidate specific provider (pattern matches key segment providerId:V or providerId:"V")
       const pattern = `sxrx:availability:*providerId*:${JSON.stringify(providerId)}*`;
       return await this.deletePattern(pattern);
     } else {
       // Invalidate all availability for state
       const pattern = `sxrx:availability:*`;
       return await this.deletePattern(pattern);
+    }
+  }
+
+  /**
+   * Record a just-booked slot so availability excludes it immediately (covers Tebra eventual consistency)
+   * TTL 2 minutes. Merge with getBookedSlots in availability calculation.
+   */
+  async addBookedSlot(state, providerId, startISO, endISO) {
+    if (!this.isAvailable() || !state || providerId == null) return false;
+    const key = `sxrx:booked:${String(state).toUpperCase()}:${providerId}`;
+    try {
+      const raw = await this.client.get(key);
+      const arr = raw ? JSON.parse(raw) : [];
+      arr.push({ start: startISO, end: endISO });
+      await this.client.setEx(key, 120, JSON.stringify(arr));
+      return true;
+    } catch (e) {
+      logger.warn('[CACHE] addBookedSlot error', { error: e?.message, key });
+      return false;
+    }
+  }
+
+  /**
+   * Get recently booked slots for a state/provider (used to exclude from availability)
+   */
+  async getBookedSlots(state, providerId) {
+    if (!this.isAvailable() || !state || providerId == null) return [];
+    const key = `sxrx:booked:${String(state).toUpperCase()}:${providerId}`;
+    try {
+      const raw = await this.client.get(key);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
     }
   }
 
