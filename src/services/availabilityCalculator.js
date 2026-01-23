@@ -127,7 +127,8 @@ class AvailabilityCalculator {
 
     while (current <= end) {
       const dateStr = current.toISOString().split('T')[0];
-      const dayOfWeek = current.toLocaleDateString('en-US', { weekday: 'lowercase' });
+      // Get weekday name and convert to lowercase (monday, tuesday, etc.)
+      const dayOfWeek = current.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
       const daySettings = settings.businessHours[dayOfWeek];
 
       if (daySettings && daySettings.enabled) {

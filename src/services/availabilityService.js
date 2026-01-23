@@ -173,7 +173,8 @@ class AvailabilityService {
       }
 
       // Check business hours
-      const dayOfWeek = slotStart.toLocaleDateString('en-US', { weekday: 'lowercase' });
+      // Get weekday name and convert to lowercase (monday, tuesday, etc.)
+      const dayOfWeek = slotStart.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
       const daySettings = this.settings.businessHours[dayOfWeek];
       
       if (!daySettings || !daySettings.enabled) {
