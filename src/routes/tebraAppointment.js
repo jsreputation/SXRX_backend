@@ -230,17 +230,44 @@ router.post('/create', auth, tebraAppointmentController.createAppointment);
 router.post('/book', auth, express.json({ limit: '1mb' }), async (req, res, next) => {
   try {
     const body = req.body || {};
+    
+    // Resolve practiceId and providerId from state if provided (User Case 2: Direct Booking)
+    let practiceId = body.practiceId;
+    let providerId = body.providerId;
+    if (body.state && !practiceId) {
+      const providerMapping = require('../config/providerMapping');
+      const mapping = providerMapping[body.state.toUpperCase()];
+      if (mapping) {
+        practiceId = mapping.practiceId;
+        providerId = mapping.defaultProviderId;
+      }
+    }
+    
+    // Handle patientSummary (from test guide User Case 2 format)
+    // Map patientSummary to patient format expected by controller
+    const patientData = body.patient || body.patientSummary || undefined;
+    
+    // Calculate endTime if not provided (30 minutes after startTime, as per test guide)
+    const startTime = body.slot?.start || body.start || body.startTime;
+    let endTime = body.slot?.end || body.end || body.endTime;
+    if (!endTime && startTime) {
+      const start = new Date(startTime);
+      if (!isNaN(start.getTime())) {
+        endTime = new Date(start.getTime() + 30 * 60000).toISOString(); // 30 minutes
+      }
+    }
+    
     const appointmentData = body.appointmentData || {
-      practiceId: body.practiceId,
-      providerId: body.providerId,
+      practiceId: practiceId,
+      providerId: providerId,
       serviceLocationId: body.locationId,
       patientId: body.patientId,
-      patientEmail: body.patient?.email || body.patientEmail,
-      patientSummary: body.patient || undefined,
-      startTime: body.slot?.start || body.start || body.startTime,
-      endTime: body.slot?.end || body.end || body.endTime,
+      patientEmail: body.patient?.email || body.patientEmail || body.patientSummary?.Email,
+      patientSummary: patientData, // Pass patientSummary to controller for patient creation
+      startTime: startTime,
+      endTime: endTime,
       reason: body.reason || 'Telemedicine consult',
-      appointmentName: body.title || 'Appointment',
+      appointmentName: body.title || body.appointmentName || 'Appointment',
       appointmentType: body.appointmentType || 'P',
       notes: body.notes || undefined,
       appointmentMode: body.appointmentMode || 'Telehealth',
