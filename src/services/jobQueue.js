@@ -16,13 +16,52 @@ class JobQueueService {
     }
 
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-    const connection = {
-      host: redisUrl.includes('://') ? new URL(redisUrl).hostname : 'localhost',
-      port: redisUrl.includes('://') ? parseInt(new URL(redisUrl).port) || 6379 : 6379,
-      password: redisUrl.includes('@') ? redisUrl.split('@')[0].split(':')[2] : undefined
-    };
+    
+    // Parse Redis URL properly
+    let connection;
+    try {
+      if (redisUrl.includes('://')) {
+        const url = new URL(redisUrl);
+        connection = {
+          host: url.hostname || 'localhost',
+          port: parseInt(url.port) || 6379,
+          password: url.password || undefined,
+          // BullMQ can also use the full URL
+          url: redisUrl
+        };
+      } else {
+        // Fallback for simple host:port format
+        const parts = redisUrl.split(':');
+        connection = {
+          host: parts[0] || 'localhost',
+          port: parseInt(parts[1]) || 6379
+        };
+      }
+    } catch (error) {
+      logger.error('[JOB_QUEUE] Failed to parse Redis URL', {
+        error: error?.message || error?.toString() || 'Unknown error',
+        redisUrl: redisUrl.replace(/:[^:@]+@/, ':****@') // Mask password in logs
+      });
+      // Fallback to default
+      connection = {
+        host: 'localhost',
+        port: 6379
+      };
+    }
 
     this.connection = connection;
+    
+    // Test Redis connection on startup (async, non-blocking)
+    // Note: This runs asynchronously and won't block startup
+    setImmediate(() => {
+      this.testConnection().catch((err) => {
+        logger.warn('[JOB_QUEUE] Redis connection test failed (workers may not function)', {
+          error: err?.message || err?.toString() || 'Unknown error',
+          code: err?.code
+        });
+      });
+    });
+    
     this.defaultJobOptions = {
       attempts: 3,
       backoff: {
@@ -114,7 +153,11 @@ class JobQueueService {
       await processor(data);
       return 'immediate-execution';
     } catch (error) {
-      logger.error(`[JOB_QUEUE] Immediate execution failed for ${jobName}`, { error: error.message });
+      logger.error(`[JOB_QUEUE] Immediate execution failed for ${jobName}`, { 
+        error: error?.message || error?.toString() || 'Unknown execution error',
+        code: error?.code,
+        stack: error?.stack
+      });
       throw error;
     }
   }
@@ -135,10 +178,20 @@ class JobQueueService {
       return this.workers.get(queueName);
     }
 
-    const worker = new Worker(queueName, processor, {
-      connection: this.connection,
-      concurrency: parseInt(process.env.JOB_QUEUE_CONCURRENCY) || 5
-    });
+    let worker;
+    try {
+      worker = new Worker(queueName, processor, {
+        connection: this.connection,
+        concurrency: parseInt(process.env.JOB_QUEUE_CONCURRENCY) || 5
+      });
+    } catch (error) {
+      logger.error(`[JOB_QUEUE] Failed to create worker for queue ${queueName}`, {
+        error: error?.message || error?.toString() || 'Unknown error',
+        code: error?.code,
+        stack: error?.stack
+      });
+      return null;
+    }
 
     worker.on('completed', (job) => {
       logger.info(`[JOB_QUEUE] Job ${job.id} completed in queue ${queueName}`, {
@@ -150,13 +203,20 @@ class JobQueueService {
     worker.on('failed', (job, err) => {
       logger.error(`[JOB_QUEUE] Job ${job.id} failed in queue ${queueName}`, {
         jobName: job.name,
-        error: err.message,
-        stack: err.stack
+        error: err?.message || err?.toString() || 'Unknown job error',
+        code: err?.code,
+        stack: err?.stack
       });
     });
 
     worker.on('error', (err) => {
-      logger.error(`[JOB_QUEUE] Worker error in queue ${queueName}`, { error: err.message });
+      logger.error(`[JOB_QUEUE] Worker error in queue ${queueName}`, { 
+        error: err?.message || err?.toString() || 'Unknown worker error',
+        code: err?.code,
+        errno: err?.errno,
+        syscall: err?.syscall,
+        stack: err?.stack
+      });
     });
 
     this.workers.set(queueName, worker);
@@ -196,6 +256,31 @@ class JobQueueService {
       delayed,
       total: waiting + active + completed + failed + delayed
     };
+  }
+
+  /**
+   * Test Redis connection
+   * @returns {Promise<boolean>}
+   */
+  async testConnection() {
+    if (!this.enabled) {
+      return false;
+    }
+    
+    try {
+      const testQueue = this.getQueue('_connection_test');
+      // Try to add a test job (will fail if Redis is not available)
+      await testQueue.add('test', { test: true }, { removeOnComplete: true, removeOnFail: true });
+      await testQueue.close();
+      logger.info('[JOB_QUEUE] Redis connection test successful');
+      return true;
+    } catch (error) {
+      logger.error('[JOB_QUEUE] Redis connection test failed', {
+        error: error?.message || error?.toString() || 'Unknown error',
+        code: error?.code
+      });
+      return false;
+    }
   }
 
   /**

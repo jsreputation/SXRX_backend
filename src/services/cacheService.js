@@ -33,7 +33,13 @@ class CacheService {
         });
 
         this.client.on('error', (err) => {
-          logger.error('[CACHE] Redis error', { error: err.message });
+          logger.error('[CACHE] Redis error', { 
+            error: err?.message || err?.toString() || 'Unknown Redis error',
+            code: err?.code,
+            errno: err?.errno,
+            syscall: err?.syscall,
+            stack: err?.stack
+          });
           // Don't disable cache on single errors, let reconnection handle it
         });
 
@@ -47,11 +53,21 @@ class CacheService {
 
         // Connect asynchronously (don't block startup)
         this.client.connect().catch((err) => {
-          logger.warn('[CACHE] Redis connection failed, caching disabled', { error: err.message });
+          logger.warn('[CACHE] Redis connection failed, caching disabled', { 
+            error: err?.message || err?.toString() || 'Unknown connection error',
+            code: err?.code,
+            errno: err?.errno,
+            syscall: err?.syscall,
+            address: err?.address,
+            port: err?.port
+          });
           this.enabled = false;
         });
       } catch (error) {
-        logger.warn('[CACHE] Redis not available, caching disabled', { error: error.message });
+        logger.warn('[CACHE] Redis not available, caching disabled', { 
+          error: error?.message || error?.toString() || 'Unknown error',
+          stack: error?.stack
+        });
         this.enabled = false;
       }
     } else {
@@ -109,7 +125,11 @@ class CacheService {
       metricsService.recordCacheOperation('miss', cacheType);
       return null;
     } catch (error) {
-      logger.warn('[CACHE] Get error', { error: error.message, key });
+      logger.warn('[CACHE] Get error', { 
+        error: error?.message || error?.toString() || 'Unknown error',
+        key,
+        code: error?.code
+      });
       return null;
     }
   }
@@ -153,7 +173,11 @@ class CacheService {
       logger.debug('[CACHE] Cache deleted', { key });
       return true;
     } catch (error) {
-      logger.warn('[CACHE] Delete error', { error: error.message, key });
+      logger.warn('[CACHE] Delete error', { 
+        error: error?.message || error?.toString() || 'Unknown error',
+        key,
+        code: error?.code
+      });
       return false;
     }
   }
@@ -178,7 +202,11 @@ class CacheService {
       logger.debug('[CACHE] Pattern deleted', { pattern, count: deleted });
       return deleted;
     } catch (error) {
-      logger.warn('[CACHE] Delete pattern error', { error: error.message, pattern });
+      logger.warn('[CACHE] Delete pattern error', { 
+        error: error?.message || error?.toString() || 'Unknown error',
+        pattern,
+        code: error?.code
+      });
       return 0;
     }
   }
