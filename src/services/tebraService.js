@@ -269,7 +269,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'DateOfBirth'
+          'Notes', 'DateOfBirth', 'PatientGuid', 'PatientSummary'
           // Removed: 'ProviderId', 'ResourceId', 'ResourceIds', 'ServiceLocationId' - must maintain order even if null
         ];
         if (value === null && skipNullFields.includes(key)) continue;
@@ -357,7 +357,7 @@ ${patientXml}        </sch:Patient>
         const skipNullFields = [
           'AppointmentId', 'AppointmentReasonId', 'AppointmentUUID', 'OccurrenceId', 'PatientCaseId', 
           'ResourceId', 'InsurancePolicyAuthorizationId', 'CreatedBy', 'CustomerId', 'UpdatedBy',
-          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId' // Can be omitted if null to use practice defaults
+          'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderId', 'ServiceLocationId', 'PatientGuid', 'PatientSummary'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         
@@ -1307,7 +1307,7 @@ ${appointmentXml}
       // Add missing required fields with defaults
       AppointmentUUID: appointmentData.appointmentUUID || appointmentData.AppointmentUUID || null,
       AttendeesCount: appointmentData.attendeesCount || appointmentData.AttendeesCount || 1,
-      CreatedAt: appointmentData.createdAt || appointmentData.CreatedAt || new Date().toISOString(),
+      CreatedAt: appointmentData.createdAt || appointmentData.CreatedAt || undefined,
       CreatedBy: appointmentData.createdBy || appointmentData.CreatedBy || null,
       CustomerId: appointmentData.customerId || appointmentData.CustomerId || null,
       EndTime: appointmentData.endTime || appointmentData.EndTime,
@@ -1373,41 +1373,41 @@ ${appointmentXml}
         return parsed;
       })(),
       StartTime: appointmentData.startTime || appointmentData.StartTime,
-      UpdatedAt: appointmentData.updatedAt || appointmentData.UpdatedAt || new Date().toISOString(),
-      UpdatedBy: appointmentData.updatedBy || appointmentData.UpdatedBy || null,
-      // Required PatientSummary structure
-      PatientSummary: appointmentData.patientSummary || appointmentData.PatientSummary || {
-        PatientId: appointmentData.patientId || appointmentData.PatientID || appointmentData.PatientId,
-        FirstName: appointmentData.patientFirstName || appointmentData.PatientFirstName || appointmentData.FirstName || 'Unknown',
-        LastName: appointmentData.patientLastName || appointmentData.PatientLastName || appointmentData.LastName || 'Patient',
-        Email: appointmentData.patientEmail || appointmentData.PatientEmail || appointmentData.Email || 'unknown@example.com',
-        DateOfBirth: appointmentData.patientDateOfBirth || appointmentData.PatientDateOfBirth || appointmentData.DateOfBirth || null,
-        PracticeId: appointmentData.practiceId || (appointmentData.PracticeID && appointmentData.PracticeID !== '') ? appointmentData.PracticeID : appointmentData.PracticeId || '1'
-      }
+      UpdatedAt: appointmentData.updatedAt || appointmentData.UpdatedAt || undefined,
+      UpdatedBy: appointmentData.updatedBy || appointmentData.UpdatedBy || null
+      // PatientSummary: omit when PatientId is provided to avoid "Error translating AppointmentCreate to CreateAppointmentV3Request".
+      // Tebra expects PatientId OR PatientSummary; sending both can break the v2→v3 translation layer.
     };
 
-    // Add PatientSummary if provided
-    if (appointmentData.patientSummary || appointmentData.PatientSummary) {
-      const patientSummary = appointmentData.patientSummary || appointmentData.PatientSummary;
-      appointment.PatientSummary = {
-        DateOfBirth: patientSummary.dateOfBirth || patientSummary.DateOfBirth,
-        Email: patientSummary.email || patientSummary.Email,
-        FirstName: patientSummary.firstName || patientSummary.FirstName,
-        GenderId: patientSummary.genderId || patientSummary.GenderId,
-        Guid: patientSummary.guid || patientSummary.Guid,
-        HomePhone: patientSummary.homePhone || patientSummary.HomePhone,
-        LastName: patientSummary.lastName || patientSummary.LastName,
-        MiddleName: patientSummary.middleName || patientSummary.MiddleName,
-        MobilePhone: patientSummary.mobilePhone || patientSummary.MobilePhone,
-        OtherEmail: patientSummary.otherEmail || patientSummary.OtherEmail,
-        OtherPhone: patientSummary.otherPhone || patientSummary.OtherPhone,
-        PatientId: patientSummary.patientId || patientSummary.PatientID || patientSummary.PatientId,
-        PracticeId: patientSummary.practiceId || (patientSummary.PracticeID && patientSummary.PracticeID !== '') ? patientSummary.PracticeID : patientSummary.PracticeId || '1',
-        PreferredEmailType: patientSummary.preferredEmailType || patientSummary.PreferredEmailType,
-        PreferredPhoneType: patientSummary.preferredPhoneType || patientSummary.PreferredPhoneType,
-        WorkEmail: patientSummary.workEmail || patientSummary.WorkEmail,
-        WorkPhone: patientSummary.workPhone || patientSummary.WorkPhone,
-        Status: patientSummary.status || patientSummary.Status
+    // Add PatientSummary only when PatientId is NOT provided (avoids Tebra v2→v3 translation error).
+    const hasPatientId = !!(appointmentData.patientId || appointmentData.PatientID || appointmentData.PatientId);
+    if (!hasPatientId) {
+      const fromInput = appointmentData.patientSummary || appointmentData.PatientSummary;
+      appointment.PatientSummary = fromInput ? {
+        DateOfBirth: fromInput.dateOfBirth || fromInput.DateOfBirth,
+        Email: fromInput.email || fromInput.Email,
+        FirstName: fromInput.firstName || fromInput.FirstName,
+        GenderId: fromInput.genderId || fromInput.GenderId,
+        Guid: fromInput.guid || fromInput.Guid,
+        HomePhone: fromInput.homePhone || fromInput.HomePhone,
+        LastName: fromInput.lastName || fromInput.LastName,
+        MiddleName: fromInput.middleName || fromInput.MiddleName,
+        MobilePhone: fromInput.mobilePhone || fromInput.MobilePhone,
+        OtherEmail: fromInput.otherEmail || fromInput.OtherEmail,
+        OtherPhone: fromInput.otherPhone || fromInput.OtherPhone,
+        PatientId: fromInput.patientId || fromInput.PatientID || fromInput.PatientId,
+        PracticeId: fromInput.practiceId || fromInput.PracticeID || fromInput.PracticeId || '1',
+        PreferredEmailType: fromInput.preferredEmailType || fromInput.PreferredEmailType,
+        PreferredPhoneType: fromInput.preferredPhoneType || fromInput.PreferredPhoneType,
+        WorkEmail: fromInput.workEmail || fromInput.WorkEmail,
+        WorkPhone: fromInput.workPhone || fromInput.WorkPhone,
+        Status: fromInput.status || fromInput.Status
+      } : {
+        FirstName: appointmentData.patientFirstName || appointmentData.PatientFirstName || 'Unknown',
+        LastName: appointmentData.patientLastName || appointmentData.PatientLastName || 'Patient',
+        Email: appointmentData.patientEmail || appointmentData.PatientEmail || 'unknown@example.com',
+        PatientId: null,
+        PracticeId: appointmentData.practiceId || appointmentData.PracticeID || appointmentData.PracticeId || '1'
       };
     }
 
