@@ -102,6 +102,9 @@ class TebraService {
     if (methodName === 'GetAppointment') {
       return this.generateGetAppointmentSOAPXML(fields);
     }
+    if (methodName === 'GetAppointmentReasons') {
+      return this.generateGetAppointmentReasonsSOAPXML(fields);
+    }
     
     // Build fields XML - match the working template exactly (with XML escaping)
     const fieldsXml = Object.keys(fields).length > 0 ? 
@@ -395,6 +398,28 @@ ${appointmentXml}        </sch:Appointment>
 ${appointmentXml}
       </sch:request>
     </sch:GetAppointment>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+  }
+
+  // Generate GetAppointmentReasons SOAP XML (RequestHeader + PracticeId only; xmlEscape avoids InternalServiceFault from special chars in Password)
+  generateGetAppointmentReasonsSOAPXML(fields) {
+    const auth = this.getAuthHeader();
+    const practiceId = fields?.PracticeId != null ? String(fields.PracticeId) : '';
+    return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:GetAppointmentReasons>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        <sch:PracticeId>${this.xmlEscape(practiceId)}</sch:PracticeId>
+      </sch:request>
+    </sch:GetAppointmentReasons>
   </soapenv:Body>
 </soapenv:Envelope>`;
   }
@@ -2656,6 +2681,13 @@ ${appointmentXml}
 
   async getAppointmentReasons(practiceId) {
     try {
+      // Use raw SOAP when enabled so RequestHeader (Password, etc.) is xmlEscape'd and avoids InternalServiceFault from special chars
+      if (this.useRawSOAP) {
+        const rawXml = await this.callRawSOAPMethod('GetAppointmentReasons', { PracticeId: practiceId }, {});
+        const parsed = this.parseRawSOAPResponse(rawXml, 'GetAppointmentReasons');
+        return this.normalizeGetAppointmentReasonsResponse(parsed);
+      }
+
       const client = await this.getClient();
       
       // Build the request structure according to the SOAP API
@@ -3757,6 +3789,37 @@ ${appointmentXml}
             [`${methodName}Result`]: {
               Practices: practices,
               TotalCount: practices.length,
+              rawXml: resultXml
+            }
+          };
+        }
+        
+        // Handle GetAppointmentReasons response
+        if (methodName === 'GetAppointmentReasons') {
+          const reasons = [];
+          const reasonMatches = resultXml.match(/<AppointmentReasonData[^>]*>(.*?)<\/AppointmentReasonData>/gs) ||
+            resultXml.match(/<AppointmentReason[^>]*>(.*?)<\/AppointmentReason>/gs) ||
+            [];
+          for (const reasonXml of reasonMatches) {
+            const reason = {};
+            const fieldMatches = reasonXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
+            if (fieldMatches) {
+              for (const fieldMatch of fieldMatches) {
+                const m = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
+                if (m) {
+                  const key = m[1].includes(':') ? m[1].split(':').pop() : m[1];
+                  reason[key] = m[2];
+                }
+              }
+            }
+            if (Object.keys(reason).length > 0) reasons.push(reason);
+          }
+          const totalMatch = resultXml.match(/<TotalCount>([^<]+)<\/TotalCount>/i);
+          const totalCount = totalMatch ? parseInt(totalMatch[1], 10) : reasons.length;
+          return {
+            [`${methodName}Result`]: {
+              AppointmentReasons: reasons,
+              TotalCount: totalCount,
               rawXml: resultXml
             }
           };
