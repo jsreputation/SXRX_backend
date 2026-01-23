@@ -171,7 +171,8 @@ app.use(csrfProtection({
     '/api/health',
     '/api/public',
     '/api/csrf-token', // Token endpoint itself
-    '/api/tebra-appointment/book' // Temporarily excluded - uses auth middleware (JWT/Shopify token) for protection
+    '/api/tebra-appointment/book', // Temporarily excluded - uses auth middleware (JWT/Shopify token) for protection
+    '/api/appointments/book' // Temporarily excluded - direct booking endpoint (will be secured with rate limiting and validation)
   ]
 }));
 
