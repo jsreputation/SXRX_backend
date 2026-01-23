@@ -50,23 +50,38 @@ CREATE INDEX IF NOT EXISTS idx_failed_webhooks_retry_query ON failed_webhooks(st
 CREATE INDEX IF NOT EXISTS idx_availability_settings_updated_at ON availability_settings(updated_at);
 
 -- Indexes for subscriptions table (if exists)
-CREATE INDEX IF NOT EXISTS idx_subscriptions_shopify_customer_id ON subscriptions(shopify_customer_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_tebra_patient_id ON subscriptions(tebra_patient_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_next_billing_date ON subscriptions(next_billing_date);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_created_at ON subscriptions(created_at);
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'subscriptions') THEN
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_shopify_customer_id ON subscriptions(shopify_customer_id);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_tebra_patient_id ON subscriptions(tebra_patient_id);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_next_billing_date ON subscriptions(next_billing_date);
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_created_at ON subscriptions(created_at);
+  END IF;
+END $$;
 
 -- Indexes for billing_sync table (if exists)
-CREATE INDEX IF NOT EXISTS idx_billing_sync_stripe_event_id ON billing_sync(stripe_event_id);
-CREATE INDEX IF NOT EXISTS idx_billing_sync_stripe_payment_intent_id ON billing_sync(stripe_payment_intent_id);
-CREATE INDEX IF NOT EXISTS idx_billing_sync_created_at ON billing_sync(created_at);
-CREATE INDEX IF NOT EXISTS idx_billing_sync_status ON billing_sync(status);
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'billing_sync') THEN
+    CREATE INDEX IF NOT EXISTS idx_billing_sync_stripe_event_id ON billing_sync(stripe_event_id);
+    CREATE INDEX IF NOT EXISTS idx_billing_sync_stripe_payment_intent_id ON billing_sync(stripe_payment_intent_id);
+    CREATE INDEX IF NOT EXISTS idx_billing_sync_created_at ON billing_sync(created_at);
+    CREATE INDEX IF NOT EXISTS idx_billing_sync_status ON billing_sync(status);
+  END IF;
+END $$;
 
 -- Indexes for encounters table (if exists)
-CREATE INDEX IF NOT EXISTS idx_encounters_shopify_order_id ON encounters(shopify_order_id);
-CREATE INDEX IF NOT EXISTS idx_encounters_tebra_patient_id ON encounters(tebra_patient_id);
-CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(status);
-CREATE INDEX IF NOT EXISTS idx_encounters_updated_at ON encounters(updated_at);
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'encounters') THEN
+    CREATE INDEX IF NOT EXISTS idx_encounters_shopify_order_id ON encounters(shopify_order_id);
+    CREATE INDEX IF NOT EXISTS idx_encounters_tebra_patient_id ON encounters(tebra_patient_id);
+    CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(status);
+    CREATE INDEX IF NOT EXISTS idx_encounters_updated_at ON encounters(updated_at);
+  END IF;
+END $$;
 
 -- Analyze tables to update statistics (only if tables exist)
 DO $$

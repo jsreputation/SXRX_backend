@@ -2958,60 +2958,68 @@ ${appointmentXml}
       }
 
       // Use raw SOAP if enabled, otherwise use soap library
+      // Note: GetAvailability may not be supported in raw SOAP mode, so we'll try raw first and fall back to soap library
       if (this.useRawSOAP) {
-        // Build fields - request all availability fields
-        const fields = {
-          ID: 1,
-          StartDate: 1,
-          EndDate: 1,
-          StartTime: 1,
-          EndTime: 1,
-          Duration: 1,
-          IsAvailable: 1,
-          ProviderID: 1,
-          ProviderName: 1,
-          ServiceLocationID: 1,
-          ServiceLocationName: 1,
-          PracticeID: 1,
-          PracticeName: 1,
-          AppointmentType: 1,
-          AppointmentReason: 1
-        };
+        try {
+          // Build fields - request all availability fields
+          const fields = {
+            ID: 1,
+            StartDate: 1,
+            EndDate: 1,
+            StartTime: 1,
+            EndTime: 1,
+            Duration: 1,
+            IsAvailable: 1,
+            ProviderID: 1,
+            ProviderName: 1,
+            ServiceLocationID: 1,
+            ServiceLocationName: 1,
+            PracticeID: 1,
+            PracticeName: 1,
+            AppointmentType: 1,
+            AppointmentReason: 1
+          };
 
-        // Build filters from options
-        const filters = {
-          ProviderID: options.providerId || '1',
-          ProviderName: options.providerName,
-          PracticeID: options.practiceId,
-          PracticeName: options.practiceName,
-          ServiceLocationID: options.serviceLocationId,
-          ServiceLocationName: options.serviceLocationName,
-          StartDate: options.startDate,
-          EndDate: options.endDate,
-          FromDate: options.fromDate,
-          ToDate: options.toDate,
-          StartTime: options.startTime,
-          EndTime: options.endTime,
-          AppointmentType: options.appointmentType,
-          AppointmentReason: options.appointmentReason,
-          IsAvailable: options.isAvailable
-        };
+          // Build filters from options
+          const filters = {
+            ProviderID: options.providerId || '1',
+            ProviderName: options.providerName,
+            PracticeID: options.practiceId,
+            PracticeName: options.practiceName,
+            ServiceLocationID: options.serviceLocationId,
+            ServiceLocationName: options.serviceLocationName,
+            StartDate: options.startDate,
+            EndDate: options.endDate,
+            FromDate: options.fromDate,
+            ToDate: options.toDate,
+            StartTime: options.startTime,
+            EndTime: options.endTime,
+            AppointmentType: options.appointmentType,
+            AppointmentReason: options.appointmentReason,
+            IsAvailable: options.isAvailable
+          };
 
-        // Remove undefined/null values
-        Object.keys(filters).forEach(key => {
-          if (filters[key] === undefined || filters[key] === null || filters[key] === '') {
-            delete filters[key];
-          }
-        });
+          // Remove undefined/null values
+          Object.keys(filters).forEach(key => {
+            if (filters[key] === undefined || filters[key] === null || filters[key] === '') {
+              delete filters[key];
+            }
+          });
 
-        const result = await this.callRawSOAPMethod('GetAvailability', fields, filters);
-        const parsed = this.parseRawSOAPResponse(result, 'GetAvailability');
-        const normalized = this.normalizeGetAvailabilityResponse(parsed);
-        
-        // Cache the result
-        await cacheService.cacheTebraResponse('getAvailability', cacheParams, normalized);
-        
-        return normalized;
+          const result = await this.callRawSOAPMethod('GetAvailability', fields, filters);
+          const parsed = this.parseRawSOAPResponse(result, 'GetAvailability');
+          const normalized = this.normalizeGetAvailabilityResponse(parsed);
+          
+          // Cache the result
+          await cacheService.cacheTebraResponse('getAvailability', cacheParams, normalized);
+          
+          return normalized;
+        } catch (rawSoapError) {
+          // If raw SOAP fails for GetAvailability, fall back to soap library client
+          // This is because GetAvailability might not be fully supported in raw SOAP mode
+          console.warn('[TEBRA] GetAvailability failed with raw SOAP, falling back to soap library client:', rawSoapError.message);
+          // Continue to soap library client code below
+        }
       }
 
       const client = await this.getClient();

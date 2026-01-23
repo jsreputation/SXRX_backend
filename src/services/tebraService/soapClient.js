@@ -93,13 +93,24 @@ class SoapClient {
         if (endTimeMatch) console.log(`🔍 [TEBRA] EndTime in XML: ${endTimeMatch[1]}`);
       }
       
+      // SOAPAction format - some methods may need different formats
+      // Try the standard format first, but GetAvailability might need special handling
+      let soapAction = `"http://www.kareo.com/api/schemas/KareoServices/${methodName}"`;
+      
+      // Some methods might need a different SOAPAction format
+      // If GetAvailability fails, it might not be supported in raw SOAP mode
+      if (methodName === 'GetAvailability') {
+        // Try alternative format: just the method name or different namespace
+        soapAction = `"http://www.kareo.com/api/schemas/${methodName}"`;
+      }
+      
       const { data } = await axios.post(
         this.soapEndpoint,
         soapXml,
         {
           headers: {
             'Content-Type': 'text/xml; charset=utf-8',
-            'SOAPAction': `"http://www.kareo.com/api/schemas/KareoServices/${methodName}"`
+            'SOAPAction': soapAction
           }
         }
       );
