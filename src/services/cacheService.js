@@ -15,6 +15,31 @@ class CacheService {
     // Initialize Redis client if enabled
     if (this.enabled) {
       try {
+        // Suppress Redis version warnings temporarily
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        
+        // Filter out Redis version warnings
+        console.warn = (...args) => {
+          const message = args.join(' ');
+          if (message.includes('highly recommended to use a minimum Redis version') || 
+              message.includes('minimum Redis version of 6.2.0')) {
+            // Suppress Redis version warnings
+            return;
+          }
+          originalWarn.apply(console, args);
+        };
+        
+        console.error = (...args) => {
+          const message = args.join(' ');
+          if (message.includes('highly recommended to use a minimum Redis version') || 
+              message.includes('minimum Redis version of 6.2.0')) {
+            // Suppress Redis version warnings
+            return;
+          }
+          originalError.apply(console, args);
+        };
+        
         const redis = require('redis');
         const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
         
@@ -31,7 +56,7 @@ class CacheService {
             }
           }
         });
-
+        
         this.client.on('error', (err) => {
           logger.error('[CACHE] Redis error', { 
             error: err?.message || err?.toString() || 'Unknown Redis error',
@@ -49,10 +74,16 @@ class CacheService {
 
         this.client.on('ready', () => {
           logger.info('[CACHE] Redis ready');
+          // Restore original console methods after Redis is ready
+          console.warn = originalWarn;
+          console.error = originalError;
         });
 
         // Connect asynchronously (don't block startup)
         this.client.connect().catch((err) => {
+          // Restore console methods on error too
+          console.warn = originalWarn;
+          console.error = originalError;
           logger.warn('[CACHE] Redis connection failed, caching disabled', { 
             error: err?.message || err?.toString() || 'Unknown connection error',
             code: err?.code,

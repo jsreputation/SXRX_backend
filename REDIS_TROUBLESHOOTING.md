@@ -1,5 +1,16 @@
 # Redis Connection Troubleshooting Guide
 
+## ⚠️ Important: Redis Version Upgrade Recommended
+
+**Current Version:** Redis 6.0.16  
+**Recommended:** Redis 6.2.0 or later
+
+Redis 6.0.16 has security vulnerabilities and is no longer supported. **Please upgrade to Redis 6.2.0+** for security fixes and better performance.
+
+See `REDIS_UPGRADE_GUIDE.md` for detailed upgrade instructions.
+
+---
+
 ## Common Redis Errors
 
 If you're seeing errors like:

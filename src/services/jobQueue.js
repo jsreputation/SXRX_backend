@@ -4,6 +4,37 @@
 const { Queue, Worker } = require('bullmq');
 const logger = require('../utils/logger');
 
+// Suppress Redis version warnings from BullMQ/Redis
+const suppressRedisVersionWarnings = () => {
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  
+  console.warn = (...args) => {
+    const message = args.join(' ');
+    if (message.includes('highly recommended to use a minimum Redis version') || 
+        message.includes('minimum Redis version of 6.2.0') ||
+        message.includes('Current: 6.0.16')) {
+      return; // Suppress Redis version warnings
+    }
+    originalWarn.apply(console, args);
+  };
+  
+  console.error = (...args) => {
+    const message = args.join(' ');
+    if (message.includes('highly recommended to use a minimum Redis version') || 
+        message.includes('minimum Redis version of 6.2.0') ||
+        message.includes('Current: 6.0.16')) {
+      return; // Suppress Redis version warnings
+    }
+    originalError.apply(console, args);
+  };
+  
+  return () => {
+    console.warn = originalWarn;
+    console.error = originalError;
+  };
+};
+
 class JobQueueService {
   constructor() {
     this.queues = new Map();
@@ -14,6 +45,9 @@ class JobQueueService {
       logger.warn('[JOB_QUEUE] Redis not enabled, job queue disabled');
       return;
     }
+    
+    // Suppress Redis version warnings during initialization
+    const restoreConsole = suppressRedisVersionWarnings();
 
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
     
@@ -51,14 +85,22 @@ class JobQueueService {
 
     this.connection = connection;
     
+    // Restore console methods after initialization
+    restoreConsole();
+    
     // Test Redis connection on startup (async, non-blocking)
     // Note: This runs asynchronously and won't block startup
     setImmediate(() => {
+      // Suppress warnings during connection test
+      const restoreConsole = suppressRedisVersionWarnings();
       this.testConnection().catch((err) => {
+        restoreConsole();
         logger.warn('[JOB_QUEUE] Redis connection test failed (workers may not function)', {
           error: err?.message || err?.toString() || 'Unknown error',
           code: err?.code
         });
+      }).finally(() => {
+        restoreConsole();
       });
     });
     

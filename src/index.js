@@ -11,6 +11,34 @@ const logger = require('./utils/logger');
 // Load environment variables
 dotenv.config();
 
+// Suppress Redis version warnings globally
+// These warnings come from the redis client library and BullMQ
+// They're informational only and don't affect functionality
+const originalWarn = console.warn;
+const originalError = console.error;
+
+console.warn = (...args) => {
+  const message = args.join(' ');
+  if (message.includes('highly recommended to use a minimum Redis version') || 
+      message.includes('minimum Redis version of 6.2.0') ||
+      message.includes('Current: 6.0.16')) {
+    // Suppress Redis version warnings - they're informational only
+    return;
+  }
+  originalWarn.apply(console, args);
+};
+
+console.error = (...args) => {
+  const message = args.join(' ');
+  if (message.includes('highly recommended to use a minimum Redis version') || 
+      message.includes('minimum Redis version of 6.2.0') ||
+      message.includes('Current: 6.0.16')) {
+    // Suppress Redis version warnings - they're informational only
+    return;
+  }
+  originalError.apply(console, args);
+};
+
 // Cache package.json version
 const packageJson = require('../package.json');
 const APP_VERSION = packageJson.version;
