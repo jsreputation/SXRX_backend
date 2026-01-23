@@ -78,7 +78,7 @@ const logger = require('../utils/logger');
 // Book appointment directly via Tebra
 router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, validateAppointmentBooking, async (req, res) => {
   try {
-    const { patientId, state, startTime, endTime, appointmentName, productId, purchaseType } = req.body;
+    const { patientId, patientEmail, firstName, lastName, state, startTime, endTime, appointmentName, productId, purchaseType } = req.body;
 
     // Get provider mapping for state (validation already ensures state is valid)
     const mapping = providerMapping[state.toUpperCase()];
@@ -87,6 +87,35 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
         success: false,
         message: `Unsupported state: ${state}. Available states: ${Object.keys(providerMapping).join(', ')}`
       });
+    }
+
+    // Resolve patientId if not provided (lookup/create by email)
+    let resolvedPatientId = patientId;
+    if (!resolvedPatientId) {
+      const email = (patientEmail || '').toLowerCase().trim();
+      // 1) Try DB mapping first
+      const existingMap = await customerPatientMapService.getByShopifyIdOrEmail(null, email);
+      if (existingMap?.tebra_patient_id) {
+        resolvedPatientId = existingMap.tebra_patient_id;
+      } else {
+        // 2) Try searching in Tebra
+        const search = await tebraService.searchPatients({ email });
+        const firstMatch = (search.patients || [])[0];
+        if (firstMatch?.ID || firstMatch?.id) {
+          resolvedPatientId = String(firstMatch.ID || firstMatch.id);
+        } else {
+          // 3) Create patient in Tebra with minimal info
+          const created = await tebraService.createPatient({
+            email,
+            firstName: firstName || 'Guest',
+            lastName: lastName || 'Customer'
+          });
+          resolvedPatientId = String(created?.id || created?.PatientID || created?.patientId);
+        }
+        if (resolvedPatientId) {
+          await customerPatientMapService.upsert(null, email, resolvedPatientId);
+        }
+      }
     }
 
     // Parse start time (validation already ensures it's valid and in future)
@@ -103,7 +132,7 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
       appointmentMode: 'Telehealth', // Telemedicine
       startTime: startDate.toISOString(),
       endTime: endDate.toISOString(),
-      patientId: patientId,
+      patientId: resolvedPatientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
       notes: `Consultation scheduled from questionnaire. Product: ${productId || 'N/A'}, Type: ${purchaseType || 'N/A'}`,
@@ -111,7 +140,7 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
     };
 
     console.log(`📅 [APPOINTMENT BOOKING] Creating appointment in Tebra:`, {
-      patientId,
+      patientId: resolvedPatientId,
       practiceId: mapping.practiceId,
       providerId: mapping.defaultProviderId,
       startTime: appointmentData.startTime,

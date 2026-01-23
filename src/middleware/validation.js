@@ -33,11 +33,35 @@ function handleValidationErrors(req, res, next) {
  * Validation rules for appointment booking
  */
 const validateAppointmentBooking = [
+  // Allow booking without an existing Tebra patientId.
+  // If patientId is not provided, patientEmail is required and backend will
+  // lookup/create a patient record automatically.
   body('patientId')
-    .notEmpty()
-    .withMessage('Patient ID is required')
+    .optional()
     .isString()
     .withMessage('Patient ID must be a string'),
+  
+  body('patientEmail')
+    .optional()
+    .isEmail()
+    .withMessage('Patient email must be a valid email address')
+    .normalizeEmail(),
+  
+  body('firstName')
+    .optional()
+    .isString()
+    .withMessage('First name must be a string')
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('First name must be between 1 and 100 characters'),
+  
+  body('lastName')
+    .optional()
+    .isString()
+    .withMessage('Last name must be a string')
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Last name must be between 1 and 100 characters'),
   
   body('state')
     .notEmpty()
@@ -86,6 +110,15 @@ const validateAppointmentBooking = [
     .optional()
     .isIn(['subscription', 'one-time'])
     .withMessage('Purchase type must be either "subscription" or "one-time"'),
+
+  body().custom((value, { req }) => {
+    const hasPatientId = !!req.body.patientId;
+    const hasEmail = !!req.body.patientEmail;
+    if (!hasPatientId && !hasEmail) {
+      throw new Error('Either patientId or patientEmail is required');
+    }
+    return true;
+  }),
   
   handleValidationErrors
 ];
