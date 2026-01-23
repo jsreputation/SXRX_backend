@@ -174,6 +174,14 @@ function csrfProtection(options = {}) {
     const tokenFromCookie = req.cookies?.[CSRF_TOKEN_COOKIE];
     const token = tokenFromHeader || tokenFromCookie;
     
+    // Log sessionId calculation for debugging
+    logger.debug('[CSRF] Verifying token', {
+      path: req.path,
+      calculatedSessionId: sessionId,
+      hasToken: !!token,
+      tokenSource: tokenFromHeader ? 'header' : (tokenFromCookie ? 'cookie' : 'none')
+    });
+    
     if (!token) {
       if (requireToken) {
         logger.warn('[CSRF] Token missing', {
@@ -201,21 +209,43 @@ function csrfProtection(options = {}) {
     }
     
     // Verify token
+    // Decode token to see what sessionId it contains (for debugging)
+    let tokenSessionId = null;
+    try {
+      const decoded = Buffer.from(token, 'base64').toString('utf-8');
+      const parts = decoded.split(':');
+      if (parts.length >= 1) {
+        tokenSessionId = parts[0]; // The sessionId embedded in the token
+      }
+    } catch (e) {
+      // Ignore decode errors
+    }
+    
     const isValid = verifyCSRFToken(token, sessionId);
     
     if (!isValid) {
       // Log more details for debugging
       const tokenPreview = token ? token.substring(0, 20) + '...' : 'missing';
+      // Extract all possible email sources for comparison
+      const bodyEmail = req.body?.email || req.body?.patientEmail || req.body?.patientSummary?.Email || req.body?.patient?.email;
+      const normalizedBodyEmail = bodyEmail ? normalizeEmail(bodyEmail) : null;
+      const expectedSessionIdFromBody = normalizedBodyEmail ? `email:${normalizedBodyEmail}` : null;
+      
       logger.warn('[CSRF] Token verification failed', {
         path: req.path,
         method: req.method,
-        sessionId: sessionId.substring(0, 30),
+        expectedSessionId: sessionId, // Full sessionId, not truncated
+        tokenSessionId: tokenSessionId, // SessionId from the token itself
+        expectedSessionIdFromBody: expectedSessionIdFromBody, // What sessionId should be based on body email
         tokenPreview: tokenPreview,
         hasTokenFromHeader: !!req.headers[CSRF_TOKEN_HEADER.toLowerCase()] || !!req.headers['x-csrf-token'],
         hasTokenFromCookie: !!req.cookies?.[CSRF_TOKEN_COOKIE],
-        bodyEmail: req.body?.email || req.body?.patientEmail || req.body?.patientSummary?.Email,
+        bodyEmail: bodyEmail,
+        normalizedBodyEmail: normalizedBodyEmail,
         queryEmail: req.query?.email,
-        userEmail: req.user?.email
+        userEmail: req.user?.email,
+        sessionIdMatch: tokenSessionId === sessionId,
+        bodyEmailMatch: tokenSessionId === expectedSessionIdFromBody
       });
       
       return res.status(403).json({
@@ -269,7 +299,13 @@ function getCSRFToken(req, res) {
   // Normalize email to ensure consistency
   const email = req.query.email || req.body?.email;
   if (email) {
-    sessionId = `email:${normalizeEmail(email)}`;
+    const normalized = normalizeEmail(email);
+    sessionId = `email:${normalized}`;
+    logger.debug('[CSRF] Generating token with email', {
+      originalEmail: email,
+      normalizedEmail: normalized,
+      sessionId: sessionId
+    });
   }
   
   const token = generateCSRFToken(sessionId);
