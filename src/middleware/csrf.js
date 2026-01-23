@@ -79,7 +79,9 @@ function verifyCSRFToken(token, sessionId) {
  * @returns {string} Session identifier
  */
 function getSessionId(req) {
-  // Prioritize user ID from JWT, then email, then IP
+  // Prioritize user ID from JWT, then email from body/query, then IP
+  // Note: req.body.email is checked early because CSRF runs before auth middleware
+  // but after express.json() parses the body
   if (req.user && req.user.id) {
     return `user:${req.user.id}`;
   }
@@ -88,8 +90,22 @@ function getSessionId(req) {
     return `email:${req.user.email}`;
   }
   
+  // Check body email (available after express.json() parsing)
   if (req.body && req.body.email) {
     return `email:${req.body.email}`;
+  }
+  
+  // Check body.patientEmail or body.patientSummary.Email (for appointment booking)
+  if (req.body) {
+    const email = req.body.patientEmail || req.body.patientSummary?.Email || req.body.patient?.email;
+    if (email) {
+      return `email:${email}`;
+    }
+  }
+  
+  // Check query parameter (for CSRF token endpoint)
+  if (req.query && req.query.email) {
+    return `email:${req.query.email}`;
   }
   
   // Fallback to IP address
@@ -229,7 +245,16 @@ function csrfTokenGenerator() {
  * Get CSRF token endpoint handler
  */
 function getCSRFToken(req, res) {
-  const sessionId = getSessionId(req);
+  // Check for email in query params or body to ensure consistent sessionId
+  // This helps when the token is fetched before authentication
+  let sessionId = getSessionId(req);
+  
+  // If email is provided in query/body, use it for sessionId to match verification
+  const email = req.query.email || req.body?.email;
+  if (email) {
+    sessionId = `email:${email}`;
+  }
+  
   const token = generateCSRFToken(sessionId);
   
   res.cookie(CSRF_TOKEN_COOKIE, token, {
