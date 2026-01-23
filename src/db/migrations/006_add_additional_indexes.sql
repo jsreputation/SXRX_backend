@@ -14,7 +14,16 @@ CREATE INDEX IF NOT EXISTS idx_qc_email_completed ON questionnaire_completions(e
 CREATE INDEX IF NOT EXISTS idx_tebra_documents_patient_label ON tebra_documents(patient_id, label) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tebra_documents_patient_name ON tebra_documents(patient_id, name) WHERE deleted_at IS NULL;
 
--- Analyze tables to update statistics
-ANALYZE customer_patient_map;
-ANALYZE questionnaire_completions;
-ANALYZE tebra_documents;
+-- Analyze tables to update statistics (only if tables exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'customer_patient_map') THEN
+    ANALYZE customer_patient_map;
+  END IF;
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'questionnaire_completions') THEN
+    ANALYZE questionnaire_completions;
+  END IF;
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'tebra_documents') THEN
+    ANALYZE tebra_documents;
+  END IF;
+END $$;

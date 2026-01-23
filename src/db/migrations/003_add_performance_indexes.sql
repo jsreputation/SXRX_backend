@@ -11,6 +11,22 @@ CREATE INDEX IF NOT EXISTS idx_cpm_updated_at ON customer_patient_map(updated_at
 -- Note: PostgreSQL can use multiple indexes with bitmap scans, but composite can help
 CREATE INDEX IF NOT EXISTS idx_cpm_shopify_or_email ON customer_patient_map(shopify_customer_id, email) WHERE shopify_customer_id IS NOT NULL OR email IS NOT NULL;
 
+-- Create questionnaire_completions table if it doesn't exist (created lazily in service, but needed for indexes)
+CREATE TABLE IF NOT EXISTS questionnaire_completions (
+  id SERIAL PRIMARY KEY,
+  email TEXT NOT NULL,
+  customer_id BIGINT,
+  product_id BIGINT NOT NULL,
+  quiz_id TEXT NOT NULL,
+  patient_id TEXT,
+  completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  red_flags_detected BOOLEAN DEFAULT FALSE,
+  state VARCHAR(10),
+  purchase_type VARCHAR(50),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for questionnaire_completions table
 CREATE INDEX IF NOT EXISTS idx_qc_email ON questionnaire_completions(email);
 CREATE INDEX IF NOT EXISTS idx_qc_customer_id ON questionnaire_completions(customer_id);
@@ -52,8 +68,19 @@ CREATE INDEX IF NOT EXISTS idx_encounters_tebra_patient_id ON encounters(tebra_p
 CREATE INDEX IF NOT EXISTS idx_encounters_status ON encounters(status);
 CREATE INDEX IF NOT EXISTS idx_encounters_updated_at ON encounters(updated_at);
 
--- Analyze tables to update statistics
-ANALYZE customer_patient_map;
-ANALYZE questionnaire_completions;
-ANALYZE failed_webhooks;
-ANALYZE availability_settings;
+-- Analyze tables to update statistics (only if tables exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'customer_patient_map') THEN
+    ANALYZE customer_patient_map;
+  END IF;
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'questionnaire_completions') THEN
+    ANALYZE questionnaire_completions;
+  END IF;
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'failed_webhooks') THEN
+    ANALYZE failed_webhooks;
+  END IF;
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'availability_settings') THEN
+    ANALYZE availability_settings;
+  END IF;
+END $$;
