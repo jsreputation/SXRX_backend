@@ -78,7 +78,19 @@ const logger = require('../utils/logger');
 // Book appointment directly via Tebra
 router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, validateAppointmentBooking, async (req, res) => {
   try {
-    const { patientId, patientEmail, firstName, lastName, state, startTime, endTime, appointmentName, productId, purchaseType } = req.body;
+    const { patientId, patientEmail, firstName, lastName, phone, state, startTime, endTime, appointmentName, productId, purchaseType } = req.body;
+    
+    // Log received data for debugging
+    logger.info('[APPOINTMENT BOOKING] Received booking request', {
+      patientEmail,
+      firstName,
+      lastName,
+      phone: phone || 'not provided',
+      state,
+      startTime,
+      appointmentName,
+      hasPatientId: !!patientId
+    });
 
     // Get provider mapping for state (validation already ensures state is valid)
     const mapping = providerMapping[state.toUpperCase()];
@@ -93,24 +105,55 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
     let resolvedPatientId = patientId;
     if (!resolvedPatientId) {
       const email = (patientEmail || '').toLowerCase().trim();
+      logger.info('[APPOINTMENT BOOKING] Resolving patient ID', { email, firstName, lastName, phone: phone || 'not provided' });
+      
       // 1) Try DB mapping first
       const existingMap = await customerPatientMapService.getByShopifyIdOrEmail(null, email);
       if (existingMap?.tebra_patient_id) {
         resolvedPatientId = existingMap.tebra_patient_id;
+        logger.info('[APPOINTMENT BOOKING] Found existing patient in DB mapping', { patientId: resolvedPatientId, email });
       } else {
         // 2) Try searching in Tebra
         const search = await tebraService.searchPatients({ email });
         const firstMatch = (search.patients || [])[0];
         if (firstMatch?.ID || firstMatch?.id) {
           resolvedPatientId = String(firstMatch.ID || firstMatch.id);
+          logger.info('[APPOINTMENT BOOKING] Found existing patient in Tebra', { patientId: resolvedPatientId, email });
         } else {
-          // 3) Create patient in Tebra with minimal info
-          const created = await tebraService.createPatient({
-            email,
+          // 3) Create patient in Tebra with all available info from Shopify
+          const patientCreateData = {
+            email: email,
             firstName: firstName || 'Guest',
-            lastName: lastName || 'Customer'
+            lastName: lastName || 'Customer',
+            state: state || null,
+            practiceId: mapping.practiceId // Include practice ID for proper assignment
+          };
+          
+          // Add phone if provided (use for both HomePhone and MobilePhone)
+          if (phone) {
+            patientCreateData.phone = phone;
+            patientCreateData.mobilePhone = phone; // Use same phone for mobile
+          }
+          
+          logger.info('[APPOINTMENT BOOKING] Creating patient in Tebra with data', {
+            email,
+            firstName,
+            lastName,
+            phone: phone || 'not provided',
+            state,
+            practiceId: mapping.practiceId
           });
+          
+          const created = await tebraService.createPatient(patientCreateData);
           resolvedPatientId = String(created?.id || created?.PatientID || created?.patientId);
+          
+          logger.info('[APPOINTMENT BOOKING] Created new patient in Tebra', {
+            patientId: resolvedPatientId,
+            email,
+            firstName,
+            lastName,
+            phone: phone || 'not provided'
+          });
         }
         if (resolvedPatientId) {
           await customerPatientMapService.upsert(null, email, resolvedPatientId);
@@ -158,7 +201,7 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
       throw new Error('Failed to get appointment ID from Tebra');
     }
 
-    console.log(`✅ [APPOINTMENT BOOKING] Created appointment ${appointmentId} in Tebra for patient ${patientId}`);
+    console.log(`✅ [APPOINTMENT BOOKING] Created appointment ${appointmentId} in Tebra for patient ${resolvedPatientId}`);
 
     // Invalidate availability cache for this state/provider
     const cacheService = require('../services/cacheService');
@@ -169,16 +212,17 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
     (async () => {
       try {
         // Get patient info for email
-        const patientInfo = await tebraService.getPatient({ patientId });
+        // Use resolvedPatientId (the actual Tebra patient ID we used to create the appointment)
+        const patientInfo = await tebraService.getPatient(resolvedPatientId);
         const patientName = patientInfo?.FirstName && patientInfo?.LastName 
           ? `${patientInfo.FirstName} ${patientInfo.LastName}`
-          : patientInfo?.Email || 'Patient';
-        const email = patientInfo?.Email;
+          : (firstName && lastName ? `${firstName} ${lastName}`.trim() : patientEmail || 'Patient');
+        const email = patientInfo?.Email || patientEmail;
         
         if (email) {
           await appointmentEmailService.sendAppointmentConfirmation({
             to: email,
-            patientName,
+            patientName: patientName || `${firstName || ''} ${lastName || ''}`.trim() || 'Patient',
             appointment: {
               id: appointmentId,
               startTime: appointmentData.startTime,
@@ -188,6 +232,9 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
               notes: appointmentData.notes
             }
           });
+          logger.info('[APPOINTMENT BOOKING] Confirmation email sent', { appointmentId, email });
+        } else {
+          logger.warn('[APPOINTMENT BOOKING] No email available for confirmation', { appointmentId, resolvedPatientId });
         }
       } catch (emailError) {
         logger.warn('[APPOINTMENT BOOKING] Failed to send confirmation email', {

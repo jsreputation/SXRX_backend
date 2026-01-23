@@ -63,6 +63,14 @@ const validateAppointmentBooking = [
     .isLength({ min: 1, max: 100 })
     .withMessage('Last name must be between 1 and 100 characters'),
   
+  body('phone')
+    .optional()
+    .isString()
+    .withMessage('Phone must be a string')
+    .trim()
+    .isLength({ min: 10, max: 20 })
+    .withMessage('Phone must be between 10 and 20 characters'),
+  
   body('state')
     .notEmpty()
     .withMessage('State is required')
