@@ -195,8 +195,9 @@ ${patientXml}        </sch:Patient>
 
   // Generate CreateAppointment SOAP XML with proper structure
   // Tebra schema expects element names with ...Id (e.g. PracticeId), not ...ID. Order matters: PracticeId before StartTime.
+  // RequestHeader (Tebra 2.3) must contain ONLY CustomerKey, User, Password — PracticeId belongs in the Appointment element only.
   generateCreateAppointmentSOAPXML(appointmentData) {
-    const auth = this.buildRequestHeader(appointmentData?.PracticeId);
+    const auth = this.buildRequestHeader();
     
     // Field order: PracticeId MUST appear before StartTime (server error: "Expecting element 'PracticeId'" when StartTime was seen first)
     const requiredFieldOrder = [
@@ -349,7 +350,7 @@ ${patientXml}        </sch:Patient>
         <sch:RequestHeader>
           <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
           <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
-          <sch:User>${this.xmlEscape(auth.User)}</sch:User>${auth.PracticeId ? `\n          <sch:PracticeId>${this.xmlEscape(String(auth.PracticeId))}</sch:PracticeId>` : ''}
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
         <sch:Appointment>
 ${appointmentXml}        </sch:Appointment>
@@ -1671,14 +1672,19 @@ ${appointmentXml}
     try {
       const client = await this.getClient();
       
-      // Build the request structure according to the SOAP API
+      // Build the request structure per Tebra 4.21: RequestHeader (CustomerKey, User, Password only), Practice (required, at request level), Patient.
+      // RequestHeader must NOT include PracticeId (Tebra 2.3). Practice is a sibling to Patient in the request.
       const args = {
         UpdatePatientReq: {
           RequestHeader: this.buildRequestHeader(),
+          Practice: {
+            PracticeID: updates.practice?.id,
+            PracticeName: this.practiceName || updates.practice?.name
+          },
           Patient: {
-        PatientID: patientId,
-          FirstName: updates.firstName,
-          LastName: updates.lastName,
+            PatientID: patientId,
+            FirstName: updates.firstName,
+            LastName: updates.lastName,
             MiddleName: updates.middleName,
             EmailAddress: updates.email,
             HomePhone: updates.phone,
@@ -1760,12 +1766,6 @@ ${appointmentXml}
               FacilityID: updates.defaultServiceLocation.facilityId,
               FacilityIDType: updates.defaultServiceLocation.facilityIdType,
               POS: updates.defaultServiceLocation.pos
-            },
-            // Practice information
-            Practice: {
-              PracticeID: updates.practice?.id,
-              PracticeName: this.practiceName,
-              ExternalID: updates.practice?.externalId
             },
             // Additional fields
             Prefix: updates.prefix,
