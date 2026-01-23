@@ -576,9 +576,105 @@ Before deploying to production, ensure:
 
 ---
 
+## Monitoring & Metrics Configuration
+
+### METRICS_ENABLED
+- **Type**: Boolean
+- **Required**: No (default: true)
+- **Description**: Enable/disable Prometheus metrics collection
+- **Example**: `true`
+- **Validation**: Must be `true` or `false`
+- **Notes**: When disabled, metrics endpoints return empty responses
+
+### BUSINESS_METRICS_ENABLED
+- **Type**: Boolean
+- **Required**: No (default: true)
+- **Description**: Enable/disable business metrics dashboard
+- **Example**: `true`
+- **Validation**: Must be `true` or `false`
+- **Notes**: When disabled, business metrics endpoints return 503
+
+### ALERTING_ENABLED
+- **Type**: Boolean
+- **Required**: No (default: true)
+- **Description**: Enable/disable alerting service
+- **Example**: `true`
+- **Validation**: Must be `true` or `false`
+- **Notes**: When disabled, no alerts will be sent
+
+### Alert Thresholds
+
+#### ALERT_HTTP_ERROR_RATE
+- **Type**: Float
+- **Required**: No (default: 0.05)
+- **Description**: HTTP error rate threshold (5% = 0.05)
+- **Example**: `0.05`
+- **Validation**: 0.0 to 1.0
+
+#### ALERT_HTTP_RESPONSE_TIME
+- **Type**: Number (milliseconds)
+- **Required**: No (default: 5000)
+- **Description**: HTTP response time threshold in milliseconds
+- **Example**: `5000`
+- **Validation**: Positive integer
+
+#### ALERT_DB_QUERY_TIME
+- **Type**: Number (milliseconds)
+- **Required**: No (default: 2000)
+- **Description**: Database query time threshold in milliseconds
+- **Example**: `2000`
+- **Validation**: Positive integer
+
+#### ALERT_DB_ERROR_RATE
+- **Type**: Float
+- **Required**: No (default: 0.01)
+- **Description**: Database error rate threshold (1% = 0.01)
+- **Example**: `0.01`
+- **Validation**: 0.0 to 1.0
+
+#### ALERT_EXTERNAL_API_ERROR_RATE
+- **Type**: Float
+- **Required**: No (default: 0.10)
+- **Description**: External API error rate threshold (10% = 0.10)
+- **Example**: `0.10`
+- **Validation**: 0.0 to 1.0
+
+#### ALERT_MEMORY_USAGE
+- **Type**: Float
+- **Required**: No (default: 0.90)
+- **Description**: Memory usage threshold (90% = 0.90)
+- **Example**: `0.90`
+- **Validation**: 0.0 to 1.0
+
+#### ALERT_EVENT_LOOP_LAG
+- **Type**: Number (milliseconds)
+- **Required**: No (default: 100)
+- **Description**: Event loop lag threshold in milliseconds
+- **Example**: `100`
+- **Validation**: Positive integer
+
+### Alert Recipients
+
+#### ALERT_EMAIL
+- **Type**: String (comma-separated)
+- **Required**: No
+- **Description**: Email addresses to receive alerts (comma-separated)
+- **Example**: `admin@example.com,ops@example.com`
+- **Validation**: Valid email addresses
+- **Notes**: Required if alerting is enabled
+
+#### ALERT_PHONE
+- **Type**: String (comma-separated)
+- **Required**: No
+- **Description**: Phone numbers to receive critical alerts via SMS (comma-separated)
+- **Example**: `+1234567890,+0987654321`
+- **Validation**: Valid phone numbers
+- **Notes**: Only used for critical severity alerts
+
 ## Additional Resources
 
 - [Tebra API Documentation](https://www.tebra.com/api-docs)
 - [Shopify API Documentation](https://shopify.dev/docs/api)
 - [SendGrid API Documentation](https://docs.sendgrid.com/api-reference)
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+- [Prometheus Documentation](https://prometheus.io/docs/)

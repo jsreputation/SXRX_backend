@@ -90,12 +90,17 @@ app.options('*', cors(corsOptions));
 app.use(requestId);
 app.use(helmet());
 // Performance monitoring middleware
-const { performanceMonitor, getPerformanceMetrics } = require('./middleware/performanceMonitor');
+const { performanceMonitor, getPerformanceMetrics, getPrometheusMetrics } = require('./middleware/performanceMonitor');
 app.use(performanceMonitor);
 
-// Performance metrics endpoint
+// Performance metrics endpoint (JSON format)
 app.get('/api/metrics', (req, res) => {
   getPerformanceMetrics(req, res);
+});
+
+// Prometheus metrics endpoint (text format for scraping)
+app.get('/metrics', async (req, res) => {
+  await getPrometheusMetrics(req, res);
 });
 
 // Initialize error tracking (Sentry)
@@ -172,6 +177,7 @@ app.use('/api/billing', require('./routes/billing'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/new-patient', require('./routes/newPatientForm'));
 app.use('/api/appointments', require('./routes/appointments'));
+app.use('/api/business-metrics', require('./routes/businessMetrics'));
 app.use('/api/email-verification', require('./routes/emailVerification'));
 app.use('/api/2fa', require('./routes/twoFactorAuth'));
 app.use('/webhooks', require('./routes/webhooks'));
@@ -388,6 +394,8 @@ const webhookRetryService = require('./services/webhookRetryService');
 const billingController = require('./controllers/billingController');
 const revenueHuntWebhookController = require('./controllers/revenueHuntWebhookController');
 const appointmentReminderService = require('./services/appointmentReminderService');
+const alertingService = require('./services/alertingService');
+const businessMetricsService = require('./services/businessMetricsService');
 
 // Schedule webhook retry processing every 5 minutes
 cron.schedule('*/5 * * * *', async () => {
@@ -422,6 +430,18 @@ cron.schedule('*/15 * * * *', async () => {
     console.error('[CRON] 2h appointment reminder processing failed:', error);
   }
 });
+
+// Metrics and alerting check (runs every minute)
+if (alertingService.enabled) {
+  cron.schedule('* * * * *', async () => {
+    try {
+      const metrics = metricsService.getMetricsSummary();
+      await alertingService.checkThresholds(metrics);
+    } catch (error) {
+      logger.error('[CRON] Metrics/alerting check failed', { error: error.message });
+    }
+  });
+}
 
 // Base route
 app.get('/', (req, res) => {

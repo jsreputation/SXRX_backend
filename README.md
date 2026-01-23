@@ -50,6 +50,7 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
 - **Webhook Handling**: Process webhooks from Shopify, Stripe, and RevenueHunt with retry logic and dead letter queue
 - **Availability Management**: Configurable business hours, blocked dates, and time slots with PostgreSQL persistence
 - **Performance Optimization**: Redis caching for Tebra responses and availability data
+- **Metrics & Monitoring**: Prometheus-compatible metrics, business KPIs dashboard, and configurable alerting
 
 ### Security Features
 
@@ -103,6 +104,7 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
   - `@sentry/node` (^10.36.0): Error tracking
   - `speakeasy` (^2.0.0): TOTP 2FA implementation
   - `qrcode` (^1.5.3): QR code generation for 2FA
+  - `prom-client` (^15.1.0): Prometheus metrics client
 
 - **Development & Testing**
   - `nodemon` (^3.1.10): Development auto-reload
@@ -143,10 +145,19 @@ backend/
 │   │   └── ...
 │   ├── services/        # Business logic services
 │   │   ├── tebraService.js
+│   │   ├── tebraService/  # Modular Tebra service
+│   │   │   ├── soapClient.js
+│   │   │   ├── soapUtils.js
+│   │   │   ├── soapXmlGenerators.js
+│   │   │   ├── patientMethods.js
+│   │   │   └── index.js
 │   │   ├── subscriptionService.js
 │   │   ├── billingSyncService.js
 │   │   ├── availabilityService.js
 │   │   ├── emailVerificationService.js
+│   │   ├── metricsService.js
+│   │   ├── businessMetricsService.js
+│   │   └── alertingService.js
 │   │   ├── cacheService.js
 │   │   └── ...
 │   ├── utils/           # Utility functions
@@ -394,6 +405,14 @@ Most endpoints require authentication via:
 - `GET /api/tebra/users/:userId` - Get Tebra user
 - `GET /api/tebra/patients` - Get Tebra patients
 - `POST /api/tebra/test-connection` - Test Tebra connection
+
+#### Monitoring & Metrics
+- `GET /metrics` - Prometheus metrics endpoint (text format)
+- `GET /api/metrics` - JSON metrics summary
+- `GET /api/business-metrics/dashboard` - Business KPIs dashboard (requires auth)
+- `GET /api/business-metrics/funnel` - Conversion funnel metrics (requires auth)
+- `GET /api/business-metrics/appointments` - Appointment statistics (requires auth)
+- `GET /api/business-metrics/revenue` - Revenue statistics (requires auth)
 
 #### Patient Management
 - `POST /api/tebra-patient/create` - Create patient in Tebra
@@ -814,10 +833,32 @@ For issues, questions, or contributions, please refer to the project's issue tra
 
 ---
 
-**Version**: 2.0.0  
+**Version**: 3.1.0  
 **Last Updated**: January 2026
 
-### Recent Updates (v3.0.0)
+### Recent Updates (v3.1.0)
+
+#### Monitoring & Observability
+- ✅ **Prometheus Metrics**: Full Prometheus-compatible metrics with `/metrics` endpoint
+- ✅ **Business Metrics Dashboard**: KPI tracking for appointments, patients, revenue, subscriptions
+- ✅ **Configurable Alerting**: Threshold-based alerting with email/SMS notifications
+- ✅ **Performance Metrics**: HTTP requests, database queries, external API calls, cache performance
+- ✅ **System Metrics**: Memory usage, CPU, event loop lag monitoring
+- ✅ **Error Tracking**: Categorized error metrics by type and code
+
+#### Documentation & Code Quality
+- ✅ **Swagger/OpenAPI**: Comprehensive API documentation for all endpoints
+- ✅ **Inline Code Comments**: Detailed documentation for complex algorithms
+- ✅ **Architecture Decision Records**: 6 ADRs documenting major architectural choices
+- ✅ **Code Organization**: Modularized TebraService, removed legacy MongoDB references
+
+#### Testing
+- ✅ **Comprehensive Test Suite**: Unit, integration, and E2E tests for all major flows
+- ✅ **Webhook Tests**: Integration tests for RevenueHunt, Stripe, and Shopify webhooks
+- ✅ **Controller Tests**: Unit tests for appointment, patient, and billing controllers
+- ✅ **Service Tests**: Unit tests for cache, email verification, billing sync, subscriptions
+
+### Previous Updates (v3.0.0)
 
 #### Security Enhancements
 - ✅ **CSRF Protection**: Token-based CSRF protection with configurable exclusions

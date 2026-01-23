@@ -106,37 +106,56 @@ exports.createAppointment = async (req, res) => {
       appointmentType: appointmentData.appointmentType,
       patientEmail: appointmentData.patientEmail,
     }, null, 2));
-    // Prevent creating overlapping appointments: check existing appointments for the same
-    // provider/resource and shift the requested slot forward in 15-minute increments
-    // until a free slot is found (maxAttempts fallback).
+    /**
+     * Overlap Prevention Algorithm:
+     * Prevents creating overlapping appointments by checking existing appointments for the same
+     * provider/resource and automatically shifting the requested slot forward in configurable increments
+     * until a free slot is found (with maxAttempts fallback to prevent infinite loops).
+     * 
+     * Algorithm Steps:
+     * 1. Calculate appointment duration from start/end times
+     * 2. Query existing appointments for the same day, provider, and practice
+     * 3. For each candidate time slot:
+     *    a. Check if it overlaps with any existing appointment (same provider/resource/patient)
+     *    b. If overlap found, shift forward by incrementMinutes
+     *    c. Repeat until free slot found or maxAttempts reached
+     * 4. Update appointmentData with shifted times if adjustment was made
+     * 
+     * Overlap Detection Logic:
+     * - Two time ranges overlap if: start1 < end2 AND start2 < end1
+     * - Checks are scoped to same provider/resource to avoid false positives
+     * - Falls back to patient-based checking if provider/resource not specified
+     */
     try {
       const start = moment(appointmentData.startTime);
       const end = moment(appointmentData.endTime);
-      const durationMs = end.diff(start);
-      const incrementMinutes = SHIFT_INCREMENT_MINUTES;
-      const maxAttempts = SHIFT_MAX_ATTEMPTS; // configurable via env
+      const durationMs = end.diff(start); // Calculate duration to preserve when shifting
+      const incrementMinutes = SHIFT_INCREMENT_MINUTES; // Default: 15 minutes
+      const maxAttempts = SHIFT_MAX_ATTEMPTS; // Default: 24 attempts (6 hours max shift)
 
       let attempts = 0;
-      let candidateStart = start.clone();
-      let candidateEnd = candidateStart.clone().add(durationMs, 'ms');
+      let candidateStart = start.clone(); // Start with original requested time
+      let candidateEnd = candidateStart.clone().add(durationMs, 'ms'); // Preserve duration
       let foundFree = false;
 
-      // remember original times so we can tell the frontend
+      // Remember original times so we can inform the frontend if adjustment was made
       const originalStartISO = start.toISOString();
       const originalEndISO = end.toISOString();
 
       // Prepare search window for the day of the appointment
+      // Only check appointments on the same day to optimize query performance
       const dayStart = start.clone().startOf('day').toISOString();
       const dayEnd = start.clone().endOf('day').toISOString();
 
       const searchOptions = { startDate: dayStart, endDate: dayEnd };
       // Include provider/practice filters when available to avoid false overlap checks
+      // This ensures we only check conflicts with appointments for the same provider/practice
       if (appointmentData.providerId) searchOptions.providerId = appointmentData.providerId;
       if (appointmentData.practiceId) searchOptions.practiceId = appointmentData.practiceId;
 
       const rawResult = await tebraService.getAppointments(searchOptions);
 
-      // Normalize returned appointments list
+      // Normalize returned appointments list - handle different response structures from Tebra API
       let existingAppointments = [];
       if (rawResult && rawResult.GetAppointmentsResult && rawResult.GetAppointmentsResult.Appointments) {
         existingAppointments = rawResult.GetAppointmentsResult.Appointments.map(a => tebraService.normalizeAppointmentData(a));
@@ -144,37 +163,55 @@ exports.createAppointment = async (req, res) => {
         existingAppointments = rawResult.appointments;
       }
 
+      /**
+       * Overlap detection function: Two time ranges overlap if they intersect
+       * @param {string} s1 - Start time of range 1 (ISO string)
+       * @param {string} e1 - End time of range 1 (ISO string)
+       * @param {string} s2 - Start time of range 2 (ISO string)
+       * @param {string} e2 - End time of range 2 (ISO string)
+       * @returns {boolean} True if ranges overlap
+       */
       const overlaps = (s1, e1, s2, e2) => {
         return (s1 < e2) && (s2 < e1);
       };
 
+      // Iterate through candidate time slots until we find a free one
       while (attempts < maxAttempts) {
-        // check if candidate overlaps any existing appointment for same provider or resource
         const candidateStartISO = candidateStart.toISOString();
         const candidateEndISO = candidateEnd.toISOString();
 
+        // Check if candidate slot overlaps any existing appointment
         const conflict = existingAppointments.find(existing => {
-          // match by provider/resource when available, otherwise ensure no overlap for the same patient
+          // Match by provider/resource when available for accurate conflict detection
+          // Provider-based: Same provider cannot have overlapping appointments
           const sameProvider = appointmentData.providerId && existing.providerId && String(appointmentData.providerId) === String(existing.providerId);
+          // Resource-based: Same resource (room/equipment) cannot be double-booked
           const sameResource = appointmentData.resourceId && existing.resourceId && String(appointmentData.resourceId) === String(existing.resourceId);
+          // Patient-based: Same patient shouldn't have overlapping appointments (fallback if no provider/resource)
           const samePatient = (appointmentData.patientId || appointmentData.PatientID) && (existing.patient?.id || existing.patientId) && String(appointmentData.patientId || appointmentData.PatientID) === String(existing.patient?.id || existing.patientId);
-          // If neither provider nor resource is specified, fall back to patient-based overlap protection
+          
+          // Determine if we should check for overlap with this existing appointment
+          // Priority: provider > resource > patient (if no provider/resource specified)
           const shouldCheck = sameProvider || sameResource || (!appointmentData.providerId && !appointmentData.resourceId && samePatient);
-          if (!shouldCheck) return false;
+          if (!shouldCheck) return false; // Skip appointments for different providers/resources
 
+          // Parse existing appointment times (handle multiple possible field names)
           const exStart = moment(existing.startTime || existing.StartTime || existing.Start);
           const exEnd = moment(existing.endTime || existing.EndTime || existing.End);
+          
+          // Check if candidate time range overlaps with existing appointment time range
           return overlaps(candidateStartISO, candidateEndISO, exStart.toISOString(), exEnd.toISOString());
         });
 
+        // If no conflict found, we have a free slot
         if (!conflict) {
           foundFree = true;
           break;
         }
 
-        // shift forward
+        // Conflict found - shift forward by increment and try again
         candidateStart.add(incrementMinutes, 'minutes');
-        candidateEnd = candidateStart.clone().add(durationMs, 'ms');
+        candidateEnd = candidateStart.clone().add(durationMs, 'ms'); // Maintain original duration
         attempts += 1;
       }
 
@@ -251,6 +288,10 @@ exports.createAppointment = async (req, res) => {
       }
 
       const result = await tebraService.createAppointment(appointmentData);
+    
+    // Record business metric
+    const metricsService = require('../services/metricsService');
+    metricsService.recordBusinessMetric('appointment_created', 1);
     
     // Invalidate appointment cache when new appointment is created
     try {

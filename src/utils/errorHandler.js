@@ -154,9 +154,18 @@ function errorHandler(err, req, res, next) {
   } else if (err.name === 'UnauthorizedError' || err.name === 'JsonWebTokenError') {
     statusCode = 401;
     errorCode = ErrorCodes.UNAUTHORIZED;
-  } else if (err.name === 'MongoError' || err.name === 'SequelizeDatabaseError') {
+  } else if (err.code && err.code.startsWith('PGSQL_') || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+    // PostgreSQL database errors
     statusCode = 500;
     errorCode = ErrorCodes.DATABASE_ERROR;
+  } else if (err.code === '23505') {
+    // PostgreSQL unique constraint violation
+    statusCode = 409;
+    errorCode = ErrorCodes.DUPLICATE_RESOURCE;
+  } else if (err.code === '23503') {
+    // PostgreSQL foreign key constraint violation
+    statusCode = 400;
+    errorCode = ErrorCodes.VALIDATION_ERROR;
   }
 
   // Use user-friendly error messages (already imported at top)

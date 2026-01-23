@@ -95,6 +95,10 @@ exports.createTebraPatient = async (req, res) => {
     // Create patient in Tebra
     const tebraData = await tebraService.createPatient(patientData);
     
+    // Record business metric
+    const metricsService = require('../services/metricsService');
+    metricsService.recordBusinessMetric('patient_created', 1);
+    
     console.log(`✅ Tebra patient created: ${tebraData.id}`);
 
     res.status(201).json({

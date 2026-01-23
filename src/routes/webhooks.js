@@ -29,6 +29,50 @@ if (jobQueueService.enabled) {
   logger.info('[WEBHOOKS] Job queue workers initialized');
 }
 
+/**
+ * @swagger
+ * /webhooks/revenue-hunt:
+ *   post:
+ *     summary: RevenueHunt v2 questionnaire completion webhook
+ *     tags: [Webhooks]
+ *     description: Receives questionnaire results from RevenueHunt v2. Note: RevenueHunt v2 does not use webhook secrets/signatures.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               quizId:
+ *                 type: string
+ *               customerId:
+ *                 type: string
+ *               productId:
+ *                 type: string
+ *               answers:
+ *                 type: object
+ *               hasRedFlags:
+ *                 type: boolean
+ *               email:
+ *                 type: string
+ *               fullName:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Webhook processed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 action:
+ *                   type: string
+ *                   enum: [proceed_to_checkout, schedule_consultation]
+ *       400:
+ *         description: Invalid payload
+ */
 // RevenueHunt v2 sends questionnaire results via webhook
 // Note: RevenueHunt v2 does not use webhook secrets/signatures, so verification is skipped
 // captureRawBody is kept for consistency but not required for signature verification
@@ -41,6 +85,32 @@ router.post('/telemedicine-appointment', express.json(), createTelemedicineAppoi
 router.post('/shopify/consultancy', express.json({ limit: '2mb' }), handleShopifyAppointment);
 router.get('/shopify/health', shopifyHealthCheck);
 
+/**
+ * @swagger
+ * /webhooks/practices:
+ *   get:
+ *     summary: Get list of Tebra practices
+ *     tags: [Webhooks]
+ *     description: Helper endpoint to discover Practice IDs for configuration
+ *     responses:
+ *       200:
+ *         description: Practices list retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 practices:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 totalCount:
+ *                   type: number
+ *       500:
+ *         description: Failed to get practices
+ */
 // Helper endpoints to discover Practice and Provider IDs
 router.get('/practices', async (req, res) => {
   try {
@@ -75,6 +145,38 @@ router.get('/practices', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /webhooks/providers/{practiceId}:
+ *   get:
+ *     summary: Get list of providers for a practice
+ *     tags: [Webhooks]
+ *     description: Helper endpoint to discover Provider IDs for configuration
+ *     parameters:
+ *       - in: path
+ *         name: practiceId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Providers list retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 providers:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 totalCount:
+ *                   type: number
+ *       500:
+ *         description: Failed to get providers
+ */
 router.get('/providers/:practiceId', async (req, res) => {
   try {
     const { practiceId } = req.params;

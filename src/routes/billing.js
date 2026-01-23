@@ -5,6 +5,36 @@ const { auth } = require('../middleware/shopifyTokenAuth');
 const controller = require('../controllers/billingSummaryController');
 const { query } = require('../db/pg');
 
+/**
+ * @swagger
+ * /api/billing/summary:
+ *   get:
+ *     summary: Get billing summary for authenticated user
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Billing summary retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 summary:
+ *                   type: object
+ *                   properties:
+ *                     totalCharges:
+ *                       type: number
+ *                     totalPayments:
+ *                       type: number
+ *                     balance:
+ *                       type: number
+ *       500:
+ *         description: Failed to get billing summary
+ */
 router.get('/summary', auth, controller.summary);
 
 // Sync payment from Stripe checkout session (for development/testing when webhooks aren't available)

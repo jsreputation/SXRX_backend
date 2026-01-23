@@ -122,105 +122,168 @@ function buildLineItemPropsMap(properties) {
   return map;
 }
 
+/**
+ * Parse duration string into minutes
+ * Supports multiple input formats commonly used by booking systems:
+ * - ISO 8601 duration: "PT30M" (30 minutes)
+ * - Time format: "HH:MM" or "HH:MM:SS" (e.g., "1:30" = 90 minutes)
+ * - Natural language: "30 min", "1.5 hours", "30 minutes"
+ * - Numeric: "30" (assumed minutes), large numbers assumed seconds/milliseconds
+ * 
+ * @param {string} raw - Raw duration string from various sources
+ * @returns {number|null} Duration in minutes, or null if unparseable
+ */
 function parseDurationMinutes(raw) {
   const s = safeTrim(raw);
   if (!s) return null;
 
-  // ISO-ish "PT30M"
+  // ISO 8601 duration format: "PT30M" (Period Time 30 Minutes)
   const iso = s.match(/^pt(\d+)m$/i);
   if (iso) return parseInt(iso[1], 10);
 
-  // "HH:MM" or "HH:MM:SS"
+  // Time format: "HH:MM" or "HH:MM:SS" (e.g., "1:30" = 1 hour 30 minutes = 90 minutes)
   const hhmm = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (hhmm) {
-    const h = parseInt(hhmm[1], 10);
-    const m = parseInt(hhmm[2], 10);
-    const sec = hhmm[3] ? parseInt(hhmm[3], 10) : 0;
-    return h * 60 + m + Math.round(sec / 60);
+    const h = parseInt(hhmm[1], 10); // Hours
+    const m = parseInt(hhmm[2], 10); // Minutes
+    const sec = hhmm[3] ? parseInt(hhmm[3], 10) : 0; // Optional seconds
+    return h * 60 + m + Math.round(sec / 60); // Convert all to minutes
   }
 
-  // "30", "30 min", "30 minutes", "1.5 hours"
+  // Natural language or numeric: "30", "30 min", "30 minutes", "1.5 hours"
   const num = s.match(/(\d+(?:\.\d+)?)/);
   if (num) {
     const n = parseFloat(num[1]);
     if (Number.isFinite(n)) {
       const lower = s.toLowerCase();
-      if (lower.includes('hour')) return Math.round(n * 60);
-      if (lower.includes('sec')) return Math.max(1, Math.round(n / 60));
+      
+      // Check for unit keywords to determine conversion factor
+      if (lower.includes('hour')) return Math.round(n * 60); // Hours to minutes
+      if (lower.includes('sec')) return Math.max(1, Math.round(n / 60)); // Seconds to minutes (min 1 min)
 
-      // Heuristic: very large numbers are probably seconds or milliseconds.
+      // Heuristic for numeric-only values: infer unit from magnitude
+      // Very large numbers (>100000) are likely milliseconds
       if (n >= 100000) return Math.max(1, Math.round(n / 60000)); // ms -> min
+      // Large numbers (>1000) are likely seconds
       if (n >= 1000) return Math.max(1, Math.round(n / 60)); // sec -> min
 
+      // Default: assume minutes for smaller numbers
       return Math.round(n);
     }
   }
 
-  return null;
+  return null; // Unparseable format
 }
 
+/**
+ * Parse appointment datetime from various formats
+ * Handles multiple input formats commonly used by booking systems and Shopify order properties:
+ * - Unix timestamps: 10-digit (seconds) or 13-digit (milliseconds)
+ * - ISO 8601 with timezone: "2024-02-15T10:00:00Z" or "2024-02-15T10:00:00-08:00"
+ * - ISO 8601 without timezone: "2024-02-15T10:00:00" (interpreted in provided timezone)
+ * - Date strings: "2024-02-15 10:00" (interpreted in provided timezone)
+ * - Generic date strings: Fallback to native Date() parsing
+ * 
+ * @param {string} value - Raw datetime string from order properties or other sources
+ * @param {string} tz - Timezone to use if value doesn't include timezone (e.g., "America/Los_Angeles")
+ * @returns {Date|null} Parsed Date object, or null if unparseable
+ */
 function parseAppointmentDateTime(value, tz) {
   const s = safeTrim(value);
   if (!s) return null;
 
-  // epoch ms/sec
+  // Unix timestamp: 10 digits = seconds, 13 digits = milliseconds
   if (/^\d{10,13}$/.test(s)) {
     const n = parseInt(s, 10);
     if (!Number.isFinite(n)) return null;
-    const ms = s.length === 10 ? n * 1000 : n;
+    const ms = s.length === 10 ? n * 1000 : n; // Convert seconds to milliseconds if needed
     const d = new Date(ms);
     return isNaN(d.getTime()) ? null : d;
   }
 
-  // If it includes an offset/Z, preserve it.
+  // ISO 8601 with timezone indicator (Z or +/-offset): preserve timezone information
+  // Use parseZone to maintain the original timezone rather than converting to local
   const zoneParsed = moment.parseZone(s, moment.ISO_8601, true);
   if (zoneParsed.isValid() && /z|[+\-]\d{2}:?\d{2}$/i.test(s)) {
-    return zoneParsed.toDate();
+    return zoneParsed.toDate(); // Return Date object preserving timezone
   }
 
-  // Try ISO-ish / RFC / generic parse with moment (best-effort).
+  // ISO 8601 format without timezone: try strict parsing first
   const m1 = moment(s, moment.ISO_8601, true);
   if (m1.isValid()) return m1.toDate();
 
-  // If no timezone info, interpret in provided tz (or UTC).
+  // No timezone info in value: interpret in provided timezone (or fallback to UTC/Shopify timezone)
+  // This is critical for appointments booked in different timezones
   const zone = tz || process.env.DEFAULT_BOOKING_TIMEZONE || process.env.SHOPIFY_TIMEZONE || 'UTC';
   const mtz = moment.tz(s, zone);
   if (mtz.isValid()) return mtz.toDate();
 
-  // Fallback to Date()
+  // Final fallback: native Date() parsing (may be unreliable for ambiguous formats)
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Extract appointment booking metadata from Shopify order line items
+ * 
+ * This function analyzes order line items to find appointment booking information embedded
+ * in product properties. Different booking apps use different property naming conventions,
+ * so this function tries multiple common patterns and scores candidates to find the best match.
+ * 
+ * Algorithm:
+ * 1. For each line item, extract and normalize all properties into a searchable map
+ * 2. Try multiple datetime extraction strategies:
+ *    a. Single combined datetime field (e.g., "appointment_start")
+ *    b. Separate date + time fields (e.g., "appointment_date" + "start_time")
+ *    c. Fallback to individual date or time fields
+ * 3. Score each candidate based on:
+ *    - Presence of valid start date (5 points)
+ *    - Both date and time fields present (3 points)
+ *    - Duration information available (1 point)
+ *    - Number of properties (1 point)
+ *    - Title keywords like "appointment", "booking", "consultation" (1 point)
+ * 4. Return highest-scoring candidate as the best match
+ * 
+ * @param {Object} order - Shopify order object
+ * @param {Array} lineItems - Array of order line items to analyze
+ * @returns {Object} Object with 'best' candidate and 'candidates' array (sorted by score)
+ */
 function extractAppointmentBookingMeta(order, lineItems) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const candidates = [];
 
   for (const item of items) {
     const properties = item?.properties || [];
-    const map = buildLineItemPropsMap(properties);
+    const map = buildLineItemPropsMap(properties); // Normalize property keys for searching
     const keys = Object.keys(map);
 
+    /**
+     * Helper to get property value by trying multiple possible key names
+     * Handles variations like "appointment_start", "appointmentStart", "appointment_start_time", etc.
+     */
     const get = (...names) => {
       for (const n of names) {
-        const k = normalizePropKey(n);
+        const k = normalizePropKey(n); // Normalize to lowercase with underscores
         if (map[k]?.value) return map[k].value;
       }
       return null;
     };
 
+    // Extract timezone from properties or order metadata
+    // Critical for parsing datetime strings without timezone info
     const tz =
       get('timezone', 'time_zone', 'tz') ||
       (order && (order.timezone || order.time_zone)) ||
       null;
 
-    // Common single-field datetime keys
+    // Strategy 1: Try single combined datetime field (most common in modern booking apps)
+    // Check multiple common field names used by different booking systems
     const startRaw =
       get('appointment_start', 'booking_start', 'start_datetime', 'start_date_time', 'appointment_datetime', 'scheduled_datetime') ||
       get('appointment_time', 'booking_time', 'scheduled_time') ||
       null;
 
-    // Split date/time keys
+    // Strategy 2: Try separate date and time fields (common in older/custom booking systems)
     const dateRaw =
       get('appointment_date', 'booking_date', 'date', 'start_date', 'scheduled_date') ||
       null;
@@ -228,18 +291,19 @@ function extractAppointmentBookingMeta(order, lineItems) {
       get('start_time', 'time', 'scheduled_time', 'appointment_time', 'booking_time') ||
       null;
 
-    // Duration keys
+    // Extract duration for appointment length calculation
     const durationRaw =
       get('duration', 'appointment_duration', 'booking_duration', 'service_duration') ||
       null;
 
     const durationMin = parseDurationMinutes(durationRaw);
 
-    // Determine start date
+    // Determine start date using multiple parsing strategies
     let startDate = null;
-    let startSource = null;
-    let usedParts = null;
+    let startSource = null; // Track which strategy succeeded for debugging
+    let usedParts = null; // Store which fields were used for logging
 
+    // Strategy 1: Single combined datetime field (highest priority - most reliable)
     if (startRaw) {
       const parsed = parseAppointmentDateTime(startRaw, tz);
       if (parsed) {
@@ -249,8 +313,9 @@ function extractAppointmentBookingMeta(order, lineItems) {
       }
     }
 
+    // Strategy 2: Combine separate date and time fields
     if (!startDate && dateRaw && timeRaw) {
-      // Combine into an ISO-ish string and parse in tz
+      // Combine into ISO-like string: "YYYY-MM-DD HH:mm"
       const combined = `${dateRaw} ${timeRaw}`;
       const parsed = parseAppointmentDateTime(combined, tz);
       if (parsed) {
@@ -260,7 +325,8 @@ function extractAppointmentBookingMeta(order, lineItems) {
       }
     }
 
-    // Some apps store date only in "appointment_date" and time in "start_time" but date is YYYY-MM-DD and time is HH:mm
+    // Strategy 3: Fallback - try individual date or time field alone
+    // Some apps store date in "appointment_date" (YYYY-MM-DD) and time in "start_time" (HH:mm)
     if (!startDate && (dateRaw || timeRaw)) {
       const parsed = parseAppointmentDateTime(startRaw || dateRaw || timeRaw, tz);
       if (parsed) {
@@ -270,28 +336,33 @@ function extractAppointmentBookingMeta(order, lineItems) {
       }
     }
 
-    // Score how likely this item is the booking item
+    /**
+     * Scoring Algorithm:
+     * Higher score = more likely this line item contains appointment booking data
+     * Scores are additive - items with more booking indicators rank higher
+     */
     const title = String(item?.title || '').toLowerCase();
     const score =
-      (startDate ? 5 : 0) +
-      (dateRaw && timeRaw ? 3 : 0) +
-      (durationMin ? 1 : 0) +
-      (keys.length ? 1 : 0) +
-          (title.includes('appointment') || title.includes('booking') || title.includes('consultation') ? 1 : 0);
+      (startDate ? 5 : 0) + // Valid datetime is strongest indicator
+      (dateRaw && timeRaw ? 3 : 0) + // Both date and time fields present
+      (durationMin ? 1 : 0) + // Duration information available
+      (keys.length ? 1 : 0) + // More properties = more likely to be booking item
+      (title.includes('appointment') || title.includes('booking') || title.includes('consultation') ? 1 : 0); // Title keywords
 
     candidates.push({
       score,
       itemTitle: item?.title || null,
       startDate,
-      startSource,
-      usedParts,
+      startSource, // Which parsing strategy succeeded
+      usedParts, // Which fields were used (for debugging)
       durationMin,
       durationRaw,
       tz: tz || null,
-      keysPreview: keys.slice(0, 20),
+      keysPreview: keys.slice(0, 20), // First 20 property keys for debugging
     });
   }
 
+  // Sort by score descending - highest scoring candidate is most likely the booking item
   candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
   return { best: candidates[0] || null, candidates };
 }
@@ -498,6 +569,7 @@ async function validateOrderBeforeProcessing_legacy(order, req = null) {
 
 exports.handleShopifyOrderPaid = async (req, res) => {
   const webhookRetryService = require('../services/webhookRetryService');
+  const metricsService = require('../services/metricsService');
   
   try {
     const order = req.body || {};
@@ -729,6 +801,7 @@ exports.handleShopifyOrderPaid = async (req, res) => {
       console.warn('⚠️ [BILLING] Encounter persistence (order) failed:', e?.message || e);
     }
 
+    metricsService.recordBusinessMetric('webhook_processed', { type: 'shopify_order_paid', status: 'success' });
     res.json({
       success: true,
       tebraChargeId,
@@ -737,6 +810,8 @@ exports.handleShopifyOrderPaid = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ [BILLING] handleShopifyOrderPaid error:', error);
+    metricsService.recordBusinessMetric('webhook_processed', { type: 'shopify_order_paid', status: 'error' });
+    metricsService.recordError('webhook', 'shopify_order_paid_error');
     
     // Store failed webhook for retry
     try {
@@ -778,6 +853,7 @@ exports.handleShopifyOrderPaid = async (req, res) => {
  */
 exports.handleShopifyOrderCreated = async (req, res) => {
   const webhookRetryService = require('../services/webhookRetryService');
+  const metricsService = require('../services/metricsService');
   
   try {
     // Log at the VERY start to catch ALL webhook requests
@@ -1166,6 +1242,8 @@ exports.handleShopifyOrderCreated = async (req, res) => {
     
     // Return 200 to prevent Shopify from retrying immediately
     // Our retry service will handle retries
+    metricsService.recordBusinessMetric('webhook_processed', { type: 'shopify_order_created', status: 'error' });
+    metricsService.recordError('webhook', 'shopify_order_created_error');
     res.status(200).json({ 
       success: false, 
       message: 'Order processing failed, will retry',

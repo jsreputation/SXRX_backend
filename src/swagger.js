@@ -28,6 +28,12 @@ const options = {
     ],
     components: {
       securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'JWT access token obtained from login endpoint'
+        },
         AdminApiKey: {
           type: 'apiKey',
           in: 'header',
@@ -132,12 +138,32 @@ const options = {
         description: 'Appointment booking and management'
       },
       {
+        name: 'Patients',
+        description: 'Patient management and operations'
+      },
+      {
+        name: 'Authentication',
+        description: 'User authentication, email verification, and 2FA'
+      },
+      {
         name: 'Availability',
         description: 'Appointment availability management'
       },
       {
         name: 'Webhooks',
         description: 'Webhook endpoints for external services'
+      },
+      {
+        name: 'Billing',
+        description: 'Billing and payment operations'
+      },
+      {
+        name: 'Documents',
+        description: 'Document management in Tebra'
+      },
+      {
+        name: 'Providers',
+        description: 'Healthcare provider information'
       },
       {
         name: 'Admin',

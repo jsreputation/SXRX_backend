@@ -7,6 +7,7 @@ const qualiphyService = require('../services/qualiphyService');
 const customerPatientMapService = require('../services/customerPatientMapService');
 const shopifyUserService = require('../services/shopifyUserService');
 const questionnaireCompletionService = require('../services/questionnaireCompletionService');
+const metricsService = require('../services/metricsService');
 const { determineState } = require('../utils/stateUtils');
 
 function hasRedFlags(payload) {
@@ -426,6 +427,9 @@ exports.handleRevenueHunt = async (req, res) => {
         }
       }
 
+      // Record business metric
+      metricsService.recordBusinessMetric('webhook_processed', { type: 'revenuehunt', status: 'success' });
+      
       // Return success with purchase approval and chart URL
       // According to workflow: proceed_to_checkout (not allow_purchase)
       return res.json({ 
@@ -477,6 +481,9 @@ exports.handleRevenueHunt = async (req, res) => {
       toDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] // Next 2 weeks
     });
 
+    // Record business metric
+    metricsService.recordBusinessMetric('webhook_processed', { type: 'revenuehunt', status: 'success' });
+    
     // Return scheduling info
     return res.json({ 
       success: true, 
@@ -500,6 +507,9 @@ exports.handleRevenueHunt = async (req, res) => {
     });
   } catch (error) {
     console.error('RevenueHunt webhook error', error);
+    // Record error metric
+    metricsService.recordBusinessMetric('webhook_processed', { type: 'revenuehunt', status: 'error' });
+    metricsService.recordError('webhook', 'revenuehunt_error');
     return res.status(500).json({ success: false, message: 'Internal error', error: error.message });
   }
 };

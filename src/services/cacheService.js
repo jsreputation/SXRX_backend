@@ -2,6 +2,7 @@
 // Redis caching service for Tebra responses and availability data
 
 const logger = require('../utils/logger');
+const metricsService = require('./metricsService');
 
 class CacheService {
   constructor() {
@@ -97,9 +98,15 @@ class CacheService {
       if (value) {
         const parsed = JSON.parse(value);
         logger.debug('[CACHE] Cache hit', { key });
+        // Extract cache type from key (e.g., 'sxrx:availability:*' -> 'availability')
+        const cacheType = key.split(':')[1] || 'unknown';
+        metricsService.recordCacheOperation('hit', cacheType);
         return parsed;
       }
       logger.debug('[CACHE] Cache miss', { key });
+      // Extract cache type from key
+      const cacheType = key.split(':')[1] || 'unknown';
+      metricsService.recordCacheOperation('miss', cacheType);
       return null;
     } catch (error) {
       logger.warn('[CACHE] Get error', { error: error.message, key });
