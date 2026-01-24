@@ -203,7 +203,7 @@ ${patientXml}        </sch:Patient>
     const auth = this.buildRequestHeader();
     
     // Field order from deserializer errors: (1) first: AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus
-    // (2) then: AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime — PracticeId must come after these.
+    // (2) then: AttendeesCount|EndTime|... (3) then: ForRecare|InsurancePolicyAuthorizationId|IsDeleted|IsGroupAppointment|IsRecurring — PracticeId must come after these.
     const requiredFieldOrder = [
       'AppointmentMode',
       'AppointmentName',
@@ -212,18 +212,19 @@ ${patientXml}        </sch:Patient>
       'AppointmentType',
       'AttendeesCount',
       'EndTime',
+      'ForRecare',
+      'InsurancePolicyAuthorizationId',
+      'IsDeleted',
+      'IsGroupAppointment',
+      'IsRecurring',
       'PracticeId',
       'ServiceLocationId',
       'StartTime',
-      'IsRecurring',
       'PatientSummary',
       'ProviderId',
       'ResourceId',
       'ResourceIds',
       'WasCreatedOnline',
-      'ForRecare',
-      'InsurancePolicyAuthorizationId',
-      'IsGroupAppointment',
       'MaxAttendees',
       'Notes',
       'PatientCaseId',
@@ -1838,9 +1839,20 @@ ${appointmentXml}
         }
       };
 
-      // Raw SOAP path: xmlEscape on RequestHeader and body avoids InternalServiceFault from special chars (e.g. Password)
+      // Raw SOAP path: xmlEscape on RequestHeader and body. Use minimal Patient (ID, FirstName, LastName, EmailAddress only) to reduce InternalServiceFault from complex/empty nested types.
       if (this.useRawSOAP) {
-        const payload = { Practice: args.UpdatePatientReq.Practice, Patient: args.UpdatePatientReq.Patient };
+        const P = args.UpdatePatientReq.Patient;
+        const minimalPatient = {
+          PatientID: P.PatientID,
+          FirstName: P.FirstName,
+          LastName: P.LastName,
+          EmailAddress: P.EmailAddress
+        };
+        if (P.MiddleName != null) minimalPatient.MiddleName = P.MiddleName;
+        if (P.HomePhone != null) minimalPatient.HomePhone = P.HomePhone;
+        if (P.MobilePhone != null) minimalPatient.MobilePhone = P.MobilePhone;
+        if (P.DateofBirth != null) minimalPatient.DateofBirth = P.DateofBirth;
+        const payload = { Practice: args.UpdatePatientReq.Practice, Patient: minimalPatient };
         const rawXml = await this.callRawSOAPMethod('UpdatePatient', payload, {});
         const faultMatch = String(rawXml).match(/<faultstring[^>]*>([^<]*)<\/faultstring>/i);
         if (faultMatch && faultMatch[1]) {
