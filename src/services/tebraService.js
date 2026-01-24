@@ -202,22 +202,17 @@ ${patientXml}        </sch:Patient>
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
     
-    // Field order from deserializer errors: (1) first: AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus
-    // (2) then: AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime (3) ForRecare|... — PracticeId after these.
+    // Tebra 4.14.1: required + optional only. No AppointmentUUID, CreatedAt, CustomerId, IsDeleted, CreatedBy.
     const requiredFieldOrder = [
       'AppointmentMode',
       'AppointmentName',
       'AppointmentReasonId',
       'AppointmentStatus',
       'AppointmentType',
-      'AppointmentUUID',
       'AttendeesCount',
-      'CreatedAt',
-      'CustomerId',
       'EndTime',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
-      'IsDeleted',
       'IsGroupAppointment',
       'IsRecurring',
       'PracticeId',
@@ -250,7 +245,7 @@ ${patientXml}        </sch:Patient>
         }
         const skipNullFields = [
           'AppointmentReasonId', 'PatientCaseId', 'InsurancePolicyAuthorizationId',
-          'Notes', 'DateOfBirth', 'PatientSummary', 'AppointmentUUID', 'CustomerId'
+          'Notes', 'DateOfBirth', 'PatientSummary'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         const orderCriticalFields = ['ResourceId', 'ResourceIds', 'RecurrenceRule'];
@@ -450,9 +445,10 @@ ${appointmentXml}
       }
       return xml;
     };
-    const hasPractice = fields?.Practice && Object.values(fields.Practice || {}).some(v => v != null);
+    // Tebra 4.21.1: Practice requires at least one of PracticeID, PracticeName. buildNodeXml skips null/undefined.
+    const hasPractice = fields?.Practice && typeof fields.Practice === 'object' && Object.values(fields.Practice).some(v => v != null && String(v).trim() !== '');
     const practiceXml = hasPractice ? `        <sch:Practice>\n${buildNodeXml(fields.Practice, '          ')}        </sch:Practice>\n` : '';
-    const patientXml = fields?.Patient ? buildNodeXml(fields.Patient, '          ') : '';
+    const patientXml = fields?.Patient && typeof fields.Patient === 'object' ? buildNodeXml(fields.Patient, '          ') : '';
     return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:sch="http://www.kareo.com/api/schemas/">
   <soapenv:Header/>
@@ -1296,11 +1292,9 @@ ${appointmentXml}
       return value;
     };
 
-    // Static/fallback values for CreateAppointmentV3 (deserializer expects AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime)
-    const crypto = require('crypto');
-    const now = new Date().toISOString();
+    // Tebra API 4.14.1: only send fields defined in the guide. Omit AppointmentUUID, CreatedAt, CustomerId, IsDeleted, CreatedBy.
     const appointment = {
-      // Required fields with defaults if not provided (element names must match Tebra schema: ...Id not ...ID)
+      // Required (4.14.1): PracticeID, ServiceLocationID, AppointmentStatus, StartTime, EndTime, IsRecurring, PatientSummary, AppointmentReasonID, ProviderID, ResourceID, ResourceIDs, AppointmentType, WasCreatedOnline, PatientID
       AppointmentMode: appointmentData.appointmentMode ?? appointmentData.AppointmentMode ?? 'Telehealth',
       AppointmentName: appointmentData.appointmentName ?? appointmentData.AppointmentName ?? 'Appointment',
       AppointmentReasonId: null, // Will be set after lookup
@@ -1311,10 +1305,6 @@ ${appointmentXml}
       PatientId: parseId(appointmentData.patientId ?? appointmentData.PatientId),
       AttendeesCount: appointmentData.attendeesCount ?? appointmentData.AttendeesCount ?? 1,
       EndTime: appointmentData.endTime ?? appointmentData.EndTime,
-      AppointmentUUID: appointmentData.appointmentUUID ?? (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : null),
-      CreatedAt: appointmentData.createdAt ?? now,
-      // CreatedBy omitted: must be Int64 (user ID). We never send it to avoid TEBRA_CREATED_BY_ID and type errors.
-      CustomerId: appointmentData.customerId ?? process.env.TEBRA_CUSTOMER_ID ?? null,
       ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
       InsurancePolicyAuthorizationId: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId),
       IsGroupAppointment: appointmentData.isGroupAppointment ?? appointmentData.IsGroupAppointment ?? false,
@@ -1849,20 +1839,22 @@ ${appointmentXml}
         }
       };
 
-      // Raw SOAP path: xmlEscape on RequestHeader and body. Use minimal Patient (ID, FirstName, LastName, EmailAddress only) to reduce InternalServiceFault from complex/empty nested types.
+      // Raw SOAP path: Tebra 4.21.1 – RequestHeader; Practice (one of PracticeID, PracticeName); Patient (PatientID, FirstName, LastName required). Minimal payload to avoid InternalServiceFault.
       if (this.useRawSOAP) {
         const P = args.UpdatePatientReq.Patient;
         const minimalPatient = {
           PatientID: P.PatientID,
-          FirstName: P.FirstName,
-          LastName: P.LastName,
-          EmailAddress: P.EmailAddress
+          FirstName: (P.FirstName != null && P.FirstName !== '') ? P.FirstName : 'Unknown',
+          LastName: (P.LastName != null && P.LastName !== '') ? P.LastName : 'Unknown'
         };
-        if (P.MiddleName != null) minimalPatient.MiddleName = P.MiddleName;
-        if (P.HomePhone != null) minimalPatient.HomePhone = P.HomePhone;
-        if (P.MobilePhone != null) minimalPatient.MobilePhone = P.MobilePhone;
-        if (P.DateofBirth != null) minimalPatient.DateofBirth = P.DateofBirth;
-        const payload = { Practice: args.UpdatePatientReq.Practice, Patient: minimalPatient };
+        // Practice: at least one of PracticeID or PracticeName per 4.21.1
+        const pId = args.UpdatePatientReq.Practice?.PracticeID ?? process.env.TEBRA_PRACTICE_ID;
+        const pName = args.UpdatePatientReq.Practice?.PracticeName ?? this.practiceName;
+        const practice = {};
+        if (pId != null && String(pId).trim() !== '') practice.PracticeID = pId;
+        if (pName != null && String(pName).trim() !== '') practice.PracticeName = pName;
+        if (Object.keys(practice).length === 0) practice.PracticeID = process.env.TEBRA_PRACTICE_ID || '1';
+        const payload = { Practice: practice, Patient: minimalPatient };
         const rawXml = await this.callRawSOAPMethod('UpdatePatient', payload, {});
         const faultMatch = String(rawXml).match(/<faultstring[^>]*>([^<]*)<\/faultstring>/i);
         if (faultMatch && faultMatch[1]) {
@@ -2385,14 +2377,10 @@ ${appointmentXml}
             delete payload.ResourceId;
             delete payload.ResourceIds;
             delete payload.Notes;
-            delete payload.CreatedBy;
-            delete payload.CreatedAt;
-            delete payload.AppointmentUUID;
-            delete payload.CustomerId;
             delete payload.ForRecare;
             delete payload.IsGroupAppointment;
             delete payload.MaxAttendees;
-            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal (no CreatedBy, CreatedAt, AppointmentUUID, CustomerId, ForRecare, IsGroupAppointment, MaxAttendees)');
+            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal (no ResourceId, ResourceIds, Notes, ForRecare, IsGroupAppointment, MaxAttendees)');
           }
 
           rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
@@ -2472,14 +2460,10 @@ ${appointmentXml}
             AppointmentReasonId: appointmentData.appointmentReasonId,
             AppointmentStatus: appointmentData.appointmentStatus,
             AppointmentType: appointmentData.appointmentType,
-            AppointmentUUID: appointmentData.appointmentUUID,
             AttendeesCount: appointmentData.attendeesCount,
-            CreatedAt: appointmentData.createdAt,
-            CustomerId: appointmentData.customerId,
             EndTime: appointmentData.endTime,
             ForRecare: appointmentData.forRecare,
             InsurancePolicyAuthorizationId: appointmentData.insurancePolicyAuthorizationId,
-            IsDeleted: appointmentData.isDeleted,
             IsGroupAppointment: appointmentData.isGroupAppointment,
             IsRecurring: appointmentData.isRecurring,
             MaxAttendees: appointmentData.maxAttendees,
