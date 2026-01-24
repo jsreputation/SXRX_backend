@@ -197,23 +197,35 @@ ${patientXml}        </sch:Patient>
   }
 
   // Generate CreateAppointment SOAP XML with proper structure
-  // Tebra schema expects element names with ...Id (e.g. PracticeId), not ...ID. Order matters: PracticeId before StartTime.
+  // Tebra schema expects element names with ...Id (e.g. PracticeId), not ...ID. Order: PracticeId, PatientSummary before StartTime.
   // RequestHeader (Tebra 2.3) must contain ONLY CustomerKey, User, Password — PracticeId belongs in the Appointment element only.
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
-    
-    // Tebra 4.14.1: use ...ID per API doc. No AppointmentUUID, CreatedAt, CustomerId, IsDeleted, CreatedBy.
+    // Map our *ID keys to schema element names (*Id). Tebra .NET deserializer is case-sensitive; wrong casing causes DeserializationFailed.
+    const SCHEMA_NAME_MAP = {
+      PracticeID: 'PracticeId',
+      ServiceLocationID: 'ServiceLocationId',
+      AppointmentReasonID: 'AppointmentReasonId',
+      ProviderID: 'ProviderId',
+      ResourceID: 'ResourceId',
+      PatientID: 'PatientId',
+      PatientCaseID: 'PatientCaseId',
+      InsurancePolicyAuthorizationID: 'InsurancePolicyAuthorizationId'
+    };
+    const toSchemaName = (k) => SCHEMA_NAME_MAP[k] || k;
+
+    // Order: PatientSummary before StartTime (fault: "Expecting ... PatientSummary | PracticeId", "StartTime is not expected").
     const requiredFieldOrder = [
       'AppointmentMode', 'AppointmentName', 'AppointmentReasonID', 'AppointmentStatus', 'AppointmentType',
       'AttendeesCount', 'EndTime', 'ForRecare', 'InsurancePolicyAuthorizationID', 'IsGroupAppointment', 'IsRecurring',
-      'PracticeID', 'ServiceLocationID', 'StartTime', 'PatientSummary', 'ProviderID', 'ResourceID', 'ResourceIds',
+      'PracticeID', 'ServiceLocationID', 'PatientSummary', 'StartTime', 'ProviderID', 'ResourceID', 'ResourceIds',
       'WasCreatedOnline', 'MaxAttendees', 'Notes', 'PatientCaseID', 'PatientSummaries', 'PatientID', 'RecurrenceRule'
     ];
-    
+
     const buildAppointmentXml = (data, indent = '         ') => {
       if (!data || typeof data !== 'object') return '';
       let xml = '';
-      
+
       for (const key of requiredFieldOrder) {
         const value = data[key];
         if (value === undefined || value === '') {
@@ -229,10 +241,11 @@ ${patientXml}        </sch:Patient>
         const orderCriticalFields = ['ResourceID', 'ResourceIds', 'RecurrenceRule'];
         if (orderCriticalFields.includes(key) && value === null) continue;
         if ((key === 'StartTime' || key === 'EndTime') && (!value || value === '')) continue;
-        
+
+        const tag = toSchemaName(key);
         if (Array.isArray(value)) {
           if (value.length > 0) {
-            xml += `${indent}<sch:${key}>\n`;
+            xml += `${indent}<sch:${tag}>\n`;
             for (const item of value) {
               if (typeof item === 'object') {
                 xml += `${indent}   <sch:GroupPatientSummary>\n`;
@@ -242,23 +255,23 @@ ${patientXml}        </sch:Patient>
                 xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
               }
             }
-            xml += `${indent}</sch:${key}>\n`;
+            xml += `${indent}</sch:${tag}>\n`;
           }
         } else if (typeof value === 'object' && !(value instanceof Date)) {
-          xml += `${indent}<sch:${key}>\n`;
+          xml += `${indent}<sch:${tag}>\n`;
           xml += buildAppointmentXml(value, indent + '   ');
-          xml += `${indent}</sch:${key}>\n`;
+          xml += `${indent}</sch:${tag}>\n`;
         } else {
           if (key === 'StartTime' || key === 'EndTime') {
             let dateValue = value instanceof Date ? value.toISOString() : (typeof value === 'string' ? (() => { try { const p = new Date(value); return !isNaN(p.getTime()) ? p.toISOString() : value; } catch (e) { return value; } })() : String(value ?? ''));
-            xml += `${indent}<sch:${key}>${this.xmlEscape(String(dateValue))}</sch:${key}>\n`;
+            xml += `${indent}<sch:${tag}>${this.xmlEscape(String(dateValue))}</sch:${tag}>\n`;
           } else {
             const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
-            xml += `${indent}<sch:${key}>${this.xmlEscape(String(finalValue))}</sch:${key}>\n`;
+            xml += `${indent}<sch:${tag}>${this.xmlEscape(String(finalValue))}</sch:${tag}>\n`;
           }
         }
       }
-      
+
       for (const [key, value] of Object.entries(data)) {
         if (requiredFieldOrder.includes(key)) continue;
         if (value === undefined || value === '') continue;
@@ -267,42 +280,38 @@ ${patientXml}        </sch:Patient>
           'Notes', 'ResourceIds', 'DateOfBirth', 'ProviderID', 'ServiceLocationID', 'PatientSummary'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
-        
+
+        const tag = toSchemaName(key);
         if (Array.isArray(value)) {
-          // Handle arrays like PatientSummaries, ResourceIds, DayOfWeek, etc.
           if (value.length > 0) {
-            xml += `${indent}<sch:${key}>\n`;
+            xml += `${indent}<sch:${tag}>\n`;
             for (const item of value) {
               if (typeof item === 'object') {
-                // Handle complex array items like PatientSummaries
                 xml += `${indent}   <sch:GroupPatientSummary>\n`;
                 xml += buildAppointmentXml(item, indent + '      ');
                 xml += `${indent}   </sch:GroupPatientSummary>\n`;
               } else {
-                // Handle simple array items like ResourceIds
                 xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
               }
             }
-            xml += `${indent}</sch:${key}>\n`;
+            xml += `${indent}</sch:${tag}>\n`;
           }
         } else if (typeof value === 'object') {
-          // Handle nested objects like PatientSummary, RecurrenceRule
-          xml += `${indent}<sch:${key}>\n`;
+          xml += `${indent}<sch:${tag}>\n`;
           xml += buildAppointmentXml(value, indent + '   ');
-          xml += `${indent}</sch:${key}>\n`;
+          xml += `${indent}</sch:${tag}>\n`;
         } else {
-          // Handle simple values (xmlEscape avoids parsing issues from &, <, > in Notes etc.)
           const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
-          xml += `${indent}<sch:${key}>${this.xmlEscape(String(finalValue))}</sch:${key}>\n`;
+          xml += `${indent}<sch:${tag}>${this.xmlEscape(String(finalValue))}</sch:${tag}>\n`;
         }
       }
-      
+
       return xml;
     };
-    
+
     const appointmentXml = buildAppointmentXml(appointmentData);
-    
-    // Log the field order in the generated XML for debugging
+
+    // Log the field order in the generated XML for debugging (uses schema names, e.g. PracticeId)
     const fieldOrderInXml = [];
     const fieldMatches = appointmentXml.match(/<sch:(\w+)>/g);
     if (fieldMatches) {
@@ -314,9 +323,9 @@ ${patientXml}        </sch:Patient>
       });
       console.log(`🔍 [TEBRA] Field order in generated XML: ${fieldOrderInXml.join(' -> ')}`);
       const startTimeIndex = fieldOrderInXml.indexOf('StartTime');
-      const practiceIDIndex = fieldOrderInXml.indexOf('PracticeID');
-      if (startTimeIndex !== -1 && practiceIDIndex !== -1 && startTimeIndex <= practiceIDIndex)
-        console.warn(`⚠️ [TEBRA] StartTime appears before PracticeID - schema requires PracticeID first`);
+      const practiceIdIndex = fieldOrderInXml.indexOf('PracticeId');
+      if (startTimeIndex !== -1 && practiceIdIndex !== -1 && startTimeIndex <= practiceIdIndex)
+        console.warn(`⚠️ [TEBRA] StartTime appears before PracticeId - schema requires PracticeId first`);
     }
     
     return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
