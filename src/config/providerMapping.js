@@ -12,6 +12,7 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_CA || undefined,
     serviceLocationId: process.env.TEBRA_SERVICE_LOCATION_ID_CA || process.env.TEBRA_SERVICE_LOCATION_ID || undefined,
     appointmentReasonId: process.env.TEBRA_APPT_REASON_ID_CA || process.env.TEBRA_APPT_REASON_NAME_CA || undefined,
+    providerGuid: process.env.TEBRA_PROVIDER_GUID_CA || process.env.TEBRA_PROVIDER_GUID || undefined,
     allowKetamine: false,
   },
   TX: {
@@ -21,6 +22,7 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_TX || undefined,
     serviceLocationId: process.env.TEBRA_SERVICE_LOCATION_ID_TX || process.env.TEBRA_SERVICE_LOCATION_ID || undefined,
     appointmentReasonId: process.env.TEBRA_APPT_REASON_ID_TX || process.env.TEBRA_APPT_REASON_NAME_TX || undefined,
+    providerGuid: process.env.TEBRA_PROVIDER_GUID_TX || process.env.TEBRA_PROVIDER_GUID || undefined,
     allowKetamine: true,
   },
   WA: {
@@ -30,6 +32,7 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_WA || process.env.TEBRA_PROVIDER_ID || undefined,
     serviceLocationId: process.env.TEBRA_SERVICE_LOCATION_ID_WA || process.env.TEBRA_SERVICE_LOCATION_ID || undefined,
     appointmentReasonId: process.env.TEBRA_APPT_REASON_ID_WA || process.env.TEBRA_APPT_REASON_NAME_WA || undefined,
+    providerGuid: process.env.TEBRA_PROVIDER_GUID_WA || process.env.TEBRA_PROVIDER_GUID || undefined,
     allowKetamine: false,
   },
   KL: {
@@ -39,6 +42,7 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_KL || process.env.TEBRA_PROVIDER_ID || undefined,
     serviceLocationId: process.env.TEBRA_SERVICE_LOCATION_ID_KL || process.env.TEBRA_SERVICE_LOCATION_ID || undefined,
     appointmentReasonId: process.env.TEBRA_APPT_REASON_ID_KL || process.env.TEBRA_APPT_REASON_NAME_KL || undefined,
+    providerGuid: process.env.TEBRA_PROVIDER_GUID_KL || process.env.TEBRA_PROVIDER_GUID || undefined,
     allowKetamine: false,
   },
   SC: {
@@ -48,6 +52,7 @@ module.exports = {
     defaultProviderId: process.env.TEBRA_PROVIDER_ID_SC || process.env.TEBRA_PROVIDER_ID || undefined,
     serviceLocationId: process.env.TEBRA_SERVICE_LOCATION_ID_SC || process.env.TEBRA_SERVICE_LOCATION_ID || undefined,
     appointmentReasonId: process.env.TEBRA_APPT_REASON_ID_SC || process.env.TEBRA_APPT_REASON_NAME_SC || undefined,
+    providerGuid: process.env.TEBRA_PROVIDER_GUID_SC || process.env.TEBRA_PROVIDER_GUID || undefined,
     allowKetamine: false,
   },
 };

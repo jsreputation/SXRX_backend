@@ -246,7 +246,9 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
       serviceLocationId: mapping.serviceLocationId,
       appointmentReasonId: mapping.appointmentReasonId,
       notes: `Consultation scheduled from questionnaire. Product: ${productId || 'N/A'}, Type: ${purchaseType || 'N/A'}`,
-      isRecurring: false
+      isRecurring: false,
+      state,
+      providerGuid: mapping.providerGuid
     };
 
     console.log(`📅 [APPOINTMENT BOOKING] Creating appointment in Tebra:`, {

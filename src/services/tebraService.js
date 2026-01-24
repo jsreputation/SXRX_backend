@@ -219,6 +219,7 @@ ${patientXml}        </sch:Patient>
       'AppointmentMode', 'AppointmentName', 'AppointmentReasonID', 'AppointmentStatus', 'AppointmentType',
       'AttendeesCount', 'EndTime', 'ForRecare', 'InsurancePolicyAuthorizationID', 'IsGroupAppointment', 'IsRecurring',
       'PracticeID', 'ServiceLocationID', 'PatientSummary', 'StartTime', 'ProviderID', 'ResourceID', 'ResourceIds',
+      'ProviderGuids', 'ResourceGuids',
       'WasCreatedOnline', 'MaxAttendees', 'Notes', 'PatientCaseID', 'PatientSummaries', 'PatientID', 'RecurrenceRule'
     ];
 
@@ -245,23 +246,38 @@ ${patientXml}        </sch:Patient>
         const tag = toSchemaName(key);
         if (Array.isArray(value)) {
           if (value.length > 0) {
-            xml += `${indent}<sch:${tag}>\n`;
-            for (const item of value) {
-              if (typeof item === 'object') {
-                xml += `${indent}   <sch:GroupPatientSummary>\n`;
-                xml += buildAppointmentXml(item, indent + '      ');
-                xml += `${indent}   </sch:GroupPatientSummary>\n`;
-              } else {
-                xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
+            // CreateAppointmentV3 expects ProviderGuids/ResourceGuids as UUID strings, not arr:long
+            if (key === 'ProviderGuids' && value.every((x) => typeof x === 'string')) {
+              xml += `${indent}<sch:ProviderGuids>\n`;
+              for (const item of value) {
+                if (/^[0-9a-fA-F-]{36}$/.test(item)) xml += `${indent}   <sch:ProviderGuid>${this.xmlEscape(item)}</sch:ProviderGuid>\n`;
               }
+              xml += `${indent}</sch:ProviderGuids>\n`;
+            } else if (key === 'ResourceGuids' && value.every((x) => typeof x === 'string')) {
+              xml += `${indent}<sch:ResourceGuids>\n`;
+              for (const item of value) {
+                if (/^[0-9a-fA-F-]{36}$/.test(item)) xml += `${indent}   <sch:ResourceGuid>${this.xmlEscape(item)}</sch:ResourceGuid>\n`;
+              }
+              xml += `${indent}</sch:ResourceGuids>\n`;
+            } else {
+              xml += `${indent}<sch:${tag}>\n`;
+              for (const item of value) {
+                if (typeof item === 'object') {
+                  xml += `${indent}   <sch:GroupPatientSummary>\n`;
+                  xml += buildAppointmentXml(item, indent + '      ');
+                  xml += `${indent}   </sch:GroupPatientSummary>\n`;
+                } else {
+                  xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
+                }
+              }
+              xml += `${indent}</sch:${tag}>\n`;
             }
-            xml += `${indent}</sch:${tag}>\n`;
           }
         } else if (typeof value === 'object' && !(value instanceof Date)) {
-          xml += `${indent}<sch:${tag}>\n`;
-          xml += buildAppointmentXml(value, indent + '   ');
-          xml += `${indent}</sch:${tag}>\n`;
-        } else {
+      xml += `${indent}<sch:${tag}>\n`;
+      xml += buildAppointmentXml(value, indent + '   ');
+      xml += `${indent}</sch:${tag}>\n`;
+    } else {
           if (key === 'StartTime' || key === 'EndTime') {
             let dateValue = value instanceof Date ? value.toISOString() : (typeof value === 'string' ? (() => { try { const p = new Date(value); return !isNaN(p.getTime()) ? p.toISOString() : value; } catch (e) { return value; } })() : String(value ?? ''));
             xml += `${indent}<sch:${tag}>${this.xmlEscape(String(dateValue))}</sch:${tag}>\n`;
@@ -1429,6 +1445,23 @@ ${appointmentXml}
       : (appointment.ResourceID != null ? [appointment.ResourceID] : (appointment.ProviderID != null ? [appointment.ProviderID] : []));
     appointment.ResourceIds = rids.map((id) => parseId(id)).filter((id) => id != null && id !== '');
 
+    // CreateAppointmentV3 requires ProviderGuids or ResourceGuids (UUIDs). Resolve from input or env.
+    const guidList = (() => {
+      const g = appointmentData.providerGuids;
+      if (Array.isArray(g) && g.length > 0) {
+        return g.filter((x) => typeof x === 'string' && /^[0-9a-fA-F-]{36}$/.test(x));
+      }
+      const one = appointmentData.providerGuid;
+      if (typeof one === 'string' && /^[0-9a-fA-F-]{36}$/.test(one)) return [one];
+      const stateKey = (appointmentData.state || '').toUpperCase();
+      const byState = stateKey ? process.env['TEBRA_PROVIDER_GUID_' + stateKey] : undefined;
+      if (typeof byState === 'string' && /^[0-9a-fA-F-]{36}$/.test(byState)) return [byState];
+      const global = process.env.TEBRA_PROVIDER_GUID;
+      if (typeof global === 'string' && /^[0-9a-fA-F-]{36}$/.test(global)) return [global];
+      return [];
+    })();
+    if (guidList.length > 0) appointment.ProviderGuids = guidList;
+
     return appointment;
   }
 
@@ -1716,9 +1749,9 @@ ${appointmentXml}
             LastName: updates.lastName,
             MiddleName: updates.middleName,
             EmailAddress: updates.email,
-            HomePhone: updates.phone,
-            MobilePhone: updates.mobilePhone,
-            WorkPhone: updates.workPhone,
+            HomePhone: this._sanitizePhoneForUpdate(updates.phone),
+            MobilePhone: this._sanitizePhoneForUpdate(updates.mobilePhone),
+            WorkPhone: this._sanitizePhoneForUpdate(updates.workPhone),
             DateofBirth: updates.dateOfBirth,
             Gender: updates.gender,
             SocialSecurityNumber: updates.ssn,
@@ -1732,7 +1765,7 @@ ${appointmentXml}
             PatientExternalID: updates.externalId,
             // Emergency contact
             EmergencyName: updates.emergencyContact?.name,
-            EmergencyPhone: updates.emergencyContact?.phone,
+            EmergencyPhone: this._sanitizePhoneForUpdate(updates.emergencyContact?.phone),
             EmergencyPhoneExt: updates.emergencyContact?.phoneExt,
             // Employer information
             Employer: updates.employer && {
@@ -3185,6 +3218,22 @@ ${appointmentXml}
       created_at: patient.CreatedDate || patient.created_at,
       updated_at: patient.LastModifiedDate || patient.updated_at
     };
+  }
+
+  /**
+   * Sanitize phone for UpdatePatient: omit placeholders and values with too few digits.
+   * Returns undefined so cleanRequestData will omit the field. Reduces InternalServiceFault
+   * when frontend sends "not provided", "n/a", etc.
+   */
+  _sanitizePhoneForUpdate(val) {
+    if (val == null || typeof val !== 'string') return undefined;
+    const s = String(val).trim();
+    if (!s) return undefined;
+    const lowered = s.toLowerCase();
+    if (['not provided', 'n/a', 'none', '-', 'na', 'n.a.', 'n.a'].includes(lowered)) return undefined;
+    const digits = s.replace(/\D/g, '');
+    if (digits.length < 10) return undefined;
+    return s;
   }
 
   cleanRequestData(obj) {

@@ -40,19 +40,25 @@ The **Tebra API Integration Technical Guide** ([PDF](https://kareocustomertraini
 
 ---
 
-## Required Change (Tebra / integration)
+## Implemented: Sending ProviderGuids in SOAP 2.1
 
-CreateAppointmentV3 needs **ProviderGuids** and/or **ResourceGuids**. To fix this, one of the following is needed:
+We now **send ProviderGuids** when available:
+
+- **buildAppointmentData** resolves `ProviderGuids` from: `appointmentData.providerGuids` → `appointmentData.providerGuid` → `TEBRA_PROVIDER_GUID_<STATE>` → `TEBRA_PROVIDER_GUID`. Only UUID-shaped values are used.
+- **generateCreateAppointmentSOAPXML** emits `<sch:ProviderGuids>` with `<sch:ProviderGuid>uuid</sch:ProviderGuid>` for each. `ResourceGuids`/`<sch:ResourceGuid>` are also supported if provided.
+- **/book** passes `state` and `providerGuid: mapping.providerGuid` into `appointmentData`. **providerMapping** and **.env.example** include `TEBRA_PROVIDER_GUID`, `TEBRA_PROVIDER_GUID_CA`, etc.
+
+**To fix CreateAppointment:** Obtain Provider (or Resource) **GUIDs** from Tebra Support or another API, then set e.g. `TEBRA_PROVIDER_GUID_CA=<uuid>` in `.env`. CreateAppointment will include `ProviderGuids` in the SOAP XML. If the SOAP 2.1 → V3 layer accepts it, the call will succeed.
+
+---
+
+## Other options (if ProviderGuids in SOAP 2.1 are not accepted)
 
 1. **Tebra enables ID→GUID mapping**  
-   Tebra could map ProviderID/ResourceID from the SOAP 2.1 payload to the corresponding Provider/Resource GUIDs when building the CreateAppointmentV3 request. This would require a change on their side.
+   Tebra could map ProviderID/ResourceID from the SOAP 2.1 payload to the corresponding Provider/Resource GUIDs when building the CreateAppointmentV3 request.
 
-2. **We send ProviderGuids/ResourceGuids in SOAP 2.1**  
-   - Obtain Provider and/or Resource **GUIDs** for the practice (from Tebra, or from an API that returns them, e.g. a newer/other endpoint).
-   - The **Tebra API Guide 4.14** does **not** document `ProviderGuids`/`ResourceGuids` for CreateAppointment. If the SOAP 2.1 **WSDL/schema** defines those elements, add them to our XML and populate with UUIDs. Otherwise, this path depends on Tebra documenting or supporting them.
-
-3. **Use a different API**  
-   If Tebra exposes a CreateAppointment (or equivalent) API that accepts ProviderID/ResourceID or that is not translated through this V3 path, switching to that could avoid the ProviderGuids/ResourceGuids requirement.
+2. **Use a different API**  
+   If Tebra exposes a CreateAppointment API that accepts ProviderID/ResourceID or that is not translated through this V3 path, switching to that could avoid the ProviderGuids/ResourceGuids requirement.
 
 ---
 
@@ -61,16 +67,16 @@ CreateAppointmentV3 needs **ProviderGuids** and/or **ResourceGuids**. To fix thi
 From `backend/`:
 
 ```bash
-node scripts/test-create-appointment-tebra.js [practiceId] [patientId]
+node scripts/test-booking-flow-tebra.js [practiceId] [patientId]
 ```
 
 Example:
 
 ```bash
-node scripts/test-create-appointment-tebra.js 1 35
+node scripts/test-booking-flow-tebra.js 1 2
 ```
 
-The script runs GetProviders, GetAppointmentReasons, buildAppointmentData, and CreateAppointment (with retries), and prints the relevant errors and hints.
+The script runs GetProviders (for Guid), GetAppointmentReasons, UpdatePatient (minimal and with "not provided"), buildAppointmentData, and CreateAppointment. It prints ProviderGuids in built data and hints when ProviderGuids/ResourceGuids or InternalServiceFault occur. Optional: set `TEBRA_PROVIDER_GUID` or `TEBRA_PROVIDER_GUID_CA` to a valid UUID to test ProviderGuids in CreateAppointment.
 
 ---
 
@@ -78,4 +84,11 @@ The script runs GetProviders, GetAppointmentReasons, buildAppointmentData, and C
 
 - Tebra SOAP 2.1: `https://webservice.kareo.com/services/soap/2.1/KareoServices.svc?wsdl`
 - [Tebra API Integration Technical Guide](https://kareocustomertraining.s3.amazonaws.com/Help%20Center/Guides/Tebra%20API%20Integration%20Technical%20Guide.pdf) (PDF): 4.3 Get Appointment Reasons, 4.11 Get Providers, 4.14 Create Appointment. CreateAppointmentV3 and ProviderGuids/ResourceGuids are **not** in the 2.1 guide.
-- Test script: `backend/scripts/test-create-appointment-tebra.js`
+- Test script: `backend/scripts/test-booking-flow-tebra.js`
+
+## UpdatePatient and InternalServiceFault
+
+UpdatePatient often returns `InternalServiceFault` (Tebra server-side) even with minimal payloads. We:
+
+- **Sanitize phone fields** in `updatePatient`: `HomePhone`, `MobilePhone`, `WorkPhone`, `EmergencyPhone` are omitted when the value is a placeholder (`"not provided"`, `"n/a"`, `"none"`, etc.) or has fewer than 10 digits. This avoids sending invalid strings that may contribute to faults.
+- **Recommend** `TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK=true` if UpdatePatient keeps failing; booking can still proceed without updating the patient on each book.
