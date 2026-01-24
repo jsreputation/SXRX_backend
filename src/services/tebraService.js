@@ -1417,7 +1417,8 @@ ${appointmentXml}
       }
     }
 
-    // ResourceId: when absent, use ProviderId
+    // ResourceId: when absent, use ProviderId. CreateAppointmentV3 requires "valid ProviderGuids or ResourceGuids";
+    // ResourceID=0 / ResourceIds=[0] are invalid and cause "Error translating" or "must have valid ProviderGuids or ResourceGuids".
     const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
     if (!hasResourceId(appointment.ResourceID)) {
       const pid = appointment.ProviderID;
@@ -2356,7 +2357,7 @@ ${appointmentXml}
         let attempt = 0;
         const errTranslate = 'Error translating AppointmentCreate to CreateAppointmentV3Request';
 
-        while (attempt < 3) {
+        while (attempt < 5) {
           attempt++;
           if (attempt === 2) {
             payload = { ...appointment };
@@ -2373,6 +2374,21 @@ ${appointmentXml}
             delete payload.IsGroupAppointment;
             delete payload.MaxAttendees;
             console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal (no ResourceID, ResourceIds, Notes, ForRecare, IsGroupAppointment, MaxAttendees)');
+          } else if (attempt === 4) {
+            payload = { ...appointment };
+            payload.AppointmentReasonID = 0;
+            console.log('🔄 [TEBRA] Retry ' + attempt + ': full payload with AppointmentReasonID=0 (V3; existing appts use 0)');
+          } else if (attempt === 5) {
+            payload = { ...appointment };
+            delete payload.ResourceID;
+            delete payload.ResourceIds;
+            delete payload.Notes;
+            delete payload.ForRecare;
+            delete payload.IsGroupAppointment;
+            delete payload.MaxAttendees;
+            delete payload.PatientID;
+            payload.AppointmentReasonID = 0;
+            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal + AppointmentReasonID=0, omit PatientID (PatientSummary only)');
           }
 
           rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
@@ -2403,8 +2419,8 @@ ${appointmentXml}
             const errorMsg = errorMatch && errorMatch[1] ? errorMatch[1].trim() : null;
             if (errorMsg) console.error(`❌ [TEBRA] Error message in CreateAppointment response: ${errorMsg}`);
             if (errorMsg && errorMsg.toLowerCase() !== 'success') {
-              if (errorMsg === errTranslate && attempt < 3) continue;
-              if (errorMsg === errTranslate && attempt === 3) break;
+              if (errorMsg === errTranslate && attempt < 5) continue;
+              if (errorMsg === errTranslate && attempt === 5) break;
               throw new Error(`Tebra CreateAppointment failed: ${errorMsg}`);
             }
             const isErrorMatch = rawXml.match(/<IsError[^>]*>([^<]+)<\/IsError>/i);
@@ -2436,7 +2452,14 @@ ${appointmentXml}
         }
 
         const lastErr = typeof rawXml === 'string' && rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
-        throw new Error(`Tebra CreateAppointment failed: ${(lastErr && lastErr[1]) || 'No AppointmentID in response'}`);
+        const msg = (lastErr && lastErr[1]) || 'No AppointmentID in response';
+        let hint = '';
+        if (/ProviderGuids or ResourceGuids/i.test(msg)) {
+          hint = ' CreateAppointmentV3 requires ProviderGuids or ResourceGuids (UUIDs). SOAP 2.1 only sends ProviderID/ResourceID; Tebra does not map them. Contact Tebra for Provider/Resource GUIDs or to enable ID→GUID mapping.';
+        } else if (/CreateAppointmentV3Request/i.test(msg)) {
+          hint = ' Set TEBRA_DEFAULT_APPT_REASON_ID from: node scripts/list-tebra-appointment-reasons.js ' + (appointment.PracticeID || '1');
+        }
+        throw new Error(`Tebra CreateAppointment failed: ${msg}${hint}`);
       }
 
       const client = await this.getClient();
@@ -2774,6 +2797,9 @@ ${appointmentXml}
       // Use raw SOAP when enabled so RequestHeader (Password, etc.) is xmlEscape'd and avoids InternalServiceFault from special chars
       if (this.useRawSOAP) {
         const rawXml = await this.callRawSOAPMethod('GetAppointmentReasons', { PracticeId: practiceId }, {});
+        if (process.env.DEBUG_TEBRA_RAW === 'GetAppointmentReasons') {
+          console.log('[DEBUG_TEBRA_RAW] GetAppointmentReasons response (preview):', String(rawXml).slice(0, 4000));
+        }
         const parsed = this.parseRawSOAPResponse(rawXml, 'GetAppointmentReasons');
         return this.normalizeGetAppointmentReasonsResponse(parsed);
       }
@@ -3531,8 +3557,9 @@ ${appointmentXml}
 
   normalizeAppointmentReasonData(reason) {
     return {
-      id: reason.ID || reason.AppointmentReasonID || reason.Id || reason.id,
-      appointmentReasonId: reason.ID || reason.AppointmentReasonID || reason.Id || reason.appointmentReasonId,
+      id: reason.ID || reason.AppointmentReasonID || reason.AppointmentReasonId || reason.Id || reason.id,
+      appointmentReasonId: reason.ID || reason.AppointmentReasonID || reason.AppointmentReasonId || reason.Id || reason.appointmentReasonId,
+      appointmentReasonGuid: reason.AppointmentReasonGuid || reason.appointmentReasonGuid,
       name: reason.Name || reason.name,
       practiceId: reason.PracticeId || reason.practiceId,
       defaultColorCode: reason.DefaultColorCode || reason.defaultColorCode,
@@ -3695,6 +3722,7 @@ ${appointmentXml}
     return {
       id: provider.ID || provider.id,
       providerId: provider.ID || provider.id || '1',
+      guid: provider.Guid || provider.guid || provider.ProviderGuid,
       firstName: provider.FirstName || provider.firstName,
       lastName: provider.LastName || provider.lastName,
       middleName: provider.MiddleName || provider.middleName,
@@ -3915,9 +3943,9 @@ ${appointmentXml}
                 }
               }
             }
-            // Fallback: explicitly find ID-like elements (Tebra 4.3.2: AppointmentReasonID)
-            if (reason.ID == null && reason.AppointmentReasonID == null && reason.Id == null) {
-              const idRegex = /<(?:[^:>]+:)?(AppointmentReasonID|ID|Id)>([^<]+)</gi;
+            // Fallback: explicitly find ID-like elements (Tebra 4.3.2: AppointmentReasonID; also AppointmentReasonId)
+            if (reason.ID == null && reason.AppointmentReasonID == null && reason.AppointmentReasonId == null && reason.Id == null) {
+              const idRegex = /<(?:[^:>]+:)?(AppointmentReasonID|AppointmentReasonId|ID|Id)>([^<]+)</gi;
               let idM;
               while ((idM = idRegex.exec(reasonXml)) !== null) {
                 const v = idM[2]?.trim();
