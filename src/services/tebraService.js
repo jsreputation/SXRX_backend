@@ -203,14 +203,18 @@ ${patientXml}        </sch:Patient>
     const auth = this.buildRequestHeader();
     
     // Field order from deserializer errors: (1) first: AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus
-    // (2) then: AttendeesCount|EndTime|... (3) then: ForRecare|InsurancePolicyAuthorizationId|IsDeleted|IsGroupAppointment|IsRecurring — PracticeId must come after these.
+    // (2) then: AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime (3) ForRecare|... — PracticeId after these.
     const requiredFieldOrder = [
       'AppointmentMode',
       'AppointmentName',
       'AppointmentReasonId',
       'AppointmentStatus',
       'AppointmentType',
+      'AppointmentUUID',
       'AttendeesCount',
+      'CreatedAt',
+      'CreatedBy',
+      'CustomerId',
       'EndTime',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
@@ -247,7 +251,7 @@ ${patientXml}        </sch:Patient>
         }
         const skipNullFields = [
           'AppointmentReasonId', 'PatientCaseId', 'InsurancePolicyAuthorizationId',
-          'Notes', 'DateOfBirth', 'PatientSummary'
+          'Notes', 'DateOfBirth', 'PatientSummary', 'AppointmentUUID', 'CreatedBy', 'CustomerId'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         const orderCriticalFields = ['ResourceId', 'ResourceIds', 'RecurrenceRule'];
@@ -1293,6 +1297,9 @@ ${appointmentXml}
       return value;
     };
 
+    // Static/fallback values for CreateAppointmentV3 (deserializer expects AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime)
+    const crypto = require('crypto');
+    const now = new Date().toISOString();
     const appointment = {
       // Required fields with defaults if not provided (element names must match Tebra schema: ...Id not ...ID)
       AppointmentMode: appointmentData.appointmentMode ?? appointmentData.AppointmentMode ?? 'Telehealth',
@@ -1305,6 +1312,10 @@ ${appointmentXml}
       PatientId: parseId(appointmentData.patientId ?? appointmentData.PatientId),
       AttendeesCount: appointmentData.attendeesCount ?? appointmentData.AttendeesCount ?? 1,
       EndTime: appointmentData.endTime ?? appointmentData.EndTime,
+      AppointmentUUID: appointmentData.appointmentUUID ?? (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : null),
+      CreatedAt: appointmentData.createdAt ?? now,
+      CreatedBy: appointmentData.createdBy ?? process.env.TEBRA_USER ?? null,
+      CustomerId: appointmentData.customerId ?? process.env.TEBRA_CUSTOMER_ID ?? null,
       ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
       InsurancePolicyAuthorizationId: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId),
       IsGroupAppointment: appointmentData.isGroupAppointment ?? appointmentData.IsGroupAppointment ?? false,
@@ -2417,6 +2428,18 @@ ${appointmentXml}
             parsed.CreateAppointmentResult.Appointment.id = appointmentId;
             return parsed;
           }
+        }
+
+        // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails twice (different XML shape may satisfy CreateAppointmentV3)
+        try {
+          console.log('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP failed twice)');
+          const client = await this.getClient();
+          const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: appointment } };
+          this.cleanRequestData(args);
+          const [result] = await client.CreateAppointmentAsync(args);
+          return this.normalizeCreateAppointmentResponse(result);
+        } catch (nodeSoapErr) {
+          console.warn('[TEBRA] node-soap CreateAppointmentAsync also failed:', nodeSoapErr.message);
         }
 
         const lastErr = typeof rawXml === 'string' && rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
