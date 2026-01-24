@@ -113,30 +113,32 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
         resolvedPatientId = existingMap.tebra_patient_id;
         logger.info('[APPOINTMENT BOOKING] Found existing patient in DB mapping', { patientId: resolvedPatientId, email });
         
-        // Update existing patient with latest data from Shopify if provided
+        // Update existing patient with latest data from Shopify if provided (skip when TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK=true to avoid InternalServiceFault noise)
         if (firstName || lastName || phone) {
-          try {
-            const updateData = {};
-            if (firstName) updateData.firstName = firstName;
-            if (lastName) updateData.lastName = lastName;
-            if (phone) {
-              updateData.phone = phone;
-              updateData.mobilePhone = phone;
-            }
-            
-            if (Object.keys(updateData).length > 0) {
-              await tebraService.updatePatient(resolvedPatientId, updateData);
-              logger.info('[APPOINTMENT BOOKING] Updated existing patient with latest Shopify data', {
+          if (process.env.TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK === 'true') {
+            logger.debug('[APPOINTMENT BOOKING] Skipping UpdatePatient (TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK)');
+          } else {
+            try {
+              const updateData = {};
+              if (firstName) updateData.firstName = firstName;
+              if (lastName) updateData.lastName = lastName;
+              if (phone) {
+                updateData.phone = phone;
+                updateData.mobilePhone = phone;
+              }
+              if (Object.keys(updateData).length > 0) {
+                await tebraService.updatePatient(resolvedPatientId, updateData);
+                logger.info('[APPOINTMENT BOOKING] Updated existing patient with latest Shopify data', {
+                  patientId: resolvedPatientId,
+                  updates: updateData
+                });
+              }
+            } catch (updateError) {
+              logger.warn('[APPOINTMENT BOOKING] Failed to update existing patient', {
                 patientId: resolvedPatientId,
-                updates: updateData
+                error: updateError.message
               });
             }
-          } catch (updateError) {
-            // Log but don't fail - patient exists, just couldn't update
-            logger.warn('[APPOINTMENT BOOKING] Failed to update existing patient', {
-              patientId: resolvedPatientId,
-              error: updateError.message
-            });
           }
         }
       } else {
@@ -150,31 +152,32 @@ router.post('/book', express.json({ limit: '50kb' }), sanitizeRequestBody, valid
           // Save mapping to DB for future lookups
           await customerPatientMapService.upsert(null, email, resolvedPatientId);
           
-          // Update existing patient with latest data from Shopify if provided
-          // This ensures Tebra has the most current information from Shopify
+          // Update existing patient with latest data from Shopify if provided (skip when TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK=true)
           if (firstName || lastName || phone) {
-            try {
-              const updateData = {};
-              if (firstName) updateData.firstName = firstName;
-              if (lastName) updateData.lastName = lastName;
-              if (phone) {
-                updateData.phone = phone;
-                updateData.mobilePhone = phone; // Use same phone for mobile
-              }
-              
-              if (Object.keys(updateData).length > 0) {
-                await tebraService.updatePatient(resolvedPatientId, updateData);
-                logger.info('[APPOINTMENT BOOKING] Updated existing patient with latest Shopify data', {
+            if (process.env.TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK === 'true') {
+              logger.debug('[APPOINTMENT BOOKING] Skipping UpdatePatient (TEBRA_SKIP_UPDATE_PATIENT_ON_BOOK)');
+            } else {
+              try {
+                const updateData = {};
+                if (firstName) updateData.firstName = firstName;
+                if (lastName) updateData.lastName = lastName;
+                if (phone) {
+                  updateData.phone = phone;
+                  updateData.mobilePhone = phone; // Use same phone for mobile
+                }
+                if (Object.keys(updateData).length > 0) {
+                  await tebraService.updatePatient(resolvedPatientId, updateData);
+                  logger.info('[APPOINTMENT BOOKING] Updated existing patient with latest Shopify data', {
+                    patientId: resolvedPatientId,
+                    updates: updateData
+                  });
+                }
+              } catch (updateError) {
+                logger.warn('[APPOINTMENT BOOKING] Failed to update existing patient', {
                   patientId: resolvedPatientId,
-                  updates: updateData
+                  error: updateError.message
                 });
               }
-            } catch (updateError) {
-              // Log but don't fail - patient exists, just couldn't update
-              logger.warn('[APPOINTMENT BOOKING] Failed to update existing patient', {
-                patientId: resolvedPatientId,
-                error: updateError.message
-              });
             }
           }
         } else {

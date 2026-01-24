@@ -2357,76 +2357,70 @@ ${appointmentXml}
           AppointmentReasonId: appointment.AppointmentReasonId
         }, null, 2));
         
-        const rawXml = await this.callRawSOAPMethod('CreateAppointment', appointment, {});
-        
-        // Log raw XML response for debugging (truncate if too long)
-        const xmlPreview = typeof rawXml === 'string' && rawXml.length > 500 
-          ? rawXml.substring(0, 500) + '...' 
-          : rawXml;
-        console.log('🔍 [TEBRA] Raw CreateAppointment XML response (preview):', xmlPreview);
-        
-        const parsed = this.parseRawSOAPResponse(rawXml, 'CreateAppointment');
-        
-        // Fallback: Extract AppointmentID directly from raw XML if parsing didn't find it
-        const appointmentNode = parsed?.CreateAppointmentResult?.Appointment || {};
-        let appointmentId = appointmentNode.AppointmentID || appointmentNode.AppointmentId || appointmentNode.id;
-        
-        if (!appointmentId && typeof rawXml === 'string') {
-          // Check for SOAP Fault first (most common error format)
-          const faultMatch = rawXml.match(/<s:Fault>[\s\S]*?<faultstring[^>]*>([^<]*)<\/faultstring>/i);
-          if (faultMatch && faultMatch[1]) {
-            const faultString = faultMatch[1].trim();
-            const faultCodeMatch = rawXml.match(/<faultcode[^>]*>([^<]*)<\/faultcode>/i);
-            const faultCode = faultCodeMatch ? faultCodeMatch[1].trim() : 'Unknown';
-            console.error(`❌ [TEBRA] SOAP Fault in CreateAppointment response:`);
-            console.error(`   Fault Code: ${faultCode}`);
-            console.error(`   Fault String: ${faultString}`);
-            throw new Error(`Tebra CreateAppointment SOAP Fault: ${faultCode} - ${faultString}`);
+        let rawXml, parsed, appointmentId;
+        let payload = appointment;
+        let attempt = 0;
+        const errTranslate = 'Error translating AppointmentCreate to CreateAppointmentV3Request';
+
+        while (attempt < 2) {
+          attempt++;
+          if (attempt === 2) {
+            payload = { ...appointment };
+            delete payload.ResourceId;
+            delete payload.ResourceIds;
+            delete payload.Notes;
+            console.log('🔄 [TEBRA] Retrying CreateAppointment without ResourceId, ResourceIds, Notes (previous: ' + errTranslate + ')');
           }
-          
-          // Try regex extraction directly from XML (like CreatePatient does)
-          const idMatch = rawXml.match(/<AppointmentID[^>]*>([^<]+)<\/AppointmentID>/i) || 
-                         rawXml.match(/<AppointmentId[^>]*>([^<]+)<\/AppointmentId>/i);
-          if (idMatch && idMatch[1]) {
-            appointmentId = idMatch[1].trim();
-            console.log(`✅ [TEBRA] Extracted AppointmentID from raw XML using regex: ${appointmentId}`);
-          }
-          
-          // Check for error messages in the response
-          const errorMatch = rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
-          if (errorMatch && errorMatch[1]) {
-            const errorMsg = errorMatch[1].trim();
-            console.error(`❌ [TEBRA] Error message in CreateAppointment response: ${errorMsg}`);
+
+          rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
+          const xmlPreview = typeof rawXml === 'string' && rawXml.length > 500 ? rawXml.substring(0, 500) + '...' : rawXml;
+          console.log('🔍 [TEBRA] Raw CreateAppointment XML response (preview):', xmlPreview);
+
+          parsed = this.parseRawSOAPResponse(rawXml, 'CreateAppointment');
+          const appointmentNode = parsed?.CreateAppointmentResult?.Appointment || {};
+          appointmentId = appointmentNode.AppointmentID || appointmentNode.AppointmentId || appointmentNode.id;
+
+          if (!appointmentId && typeof rawXml === 'string') {
+            const faultMatch = rawXml.match(/<s:Fault>[\s\S]*?<faultstring[^>]*>([^<]*)<\/faultstring>/i);
+            if (faultMatch && faultMatch[1]) {
+              const faultString = faultMatch[1].trim();
+              const faultCodeMatch = rawXml.match(/<faultcode[^>]*>([^<]*)<\/faultcode>/i);
+              const faultCode = faultCodeMatch ? faultCodeMatch[1].trim() : 'Unknown';
+              console.error(`❌ [TEBRA] SOAP Fault in CreateAppointment response:`);
+              console.error(`   Fault Code: ${faultCode}`);
+              console.error(`   Fault String: ${faultString}`);
+              throw new Error(`Tebra CreateAppointment SOAP Fault: ${faultCode} - ${faultString}`);
+            }
+            const idMatch = rawXml.match(/<AppointmentID[^>]*>([^<]+)<\/AppointmentID>/i) || rawXml.match(/<AppointmentId[^>]*>([^<]+)<\/AppointmentId>/i);
+            if (idMatch && idMatch[1]) {
+              appointmentId = idMatch[1].trim();
+              console.log(`✅ [TEBRA] Extracted AppointmentID from raw XML using regex: ${appointmentId}`);
+            }
+            const errorMatch = rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
+            const errorMsg = errorMatch && errorMatch[1] ? errorMatch[1].trim() : null;
+            if (errorMsg) console.error(`❌ [TEBRA] Error message in CreateAppointment response: ${errorMsg}`);
             if (errorMsg && errorMsg.toLowerCase() !== 'success') {
+              if (errorMsg === errTranslate && attempt === 1) continue;
               throw new Error(`Tebra CreateAppointment failed: ${errorMsg}`);
             }
-          }
-          
-          // Check IsError flag
-          const isErrorMatch = rawXml.match(/<IsError[^>]*>([^<]+)<\/IsError>/i);
-          if (isErrorMatch && isErrorMatch[1]) {
-            const isError = isErrorMatch[1].toLowerCase() === 'true';
-            if (isError) {
-              const errorMsg = errorMatch?.[1] || 'Unknown error';
-              throw new Error(`Tebra CreateAppointment returned IsError=true: ${errorMsg}`);
+            const isErrorMatch = rawXml.match(/<IsError[^>]*>([^<]+)<\/IsError>/i);
+            if (isErrorMatch && isErrorMatch[1] && isErrorMatch[1].toLowerCase() === 'true') {
+              throw new Error(`Tebra CreateAppointment returned IsError=true: ${errorMsg || 'Unknown error'}`);
             }
           }
-        }
-        
-        // If we found an appointment ID, add it to the parsed result
-        if (appointmentId) {
-          if (!parsed.CreateAppointmentResult) {
-            parsed.CreateAppointmentResult = {};
+
+          if (appointmentId) {
+            if (!parsed.CreateAppointmentResult) parsed.CreateAppointmentResult = {};
+            if (!parsed.CreateAppointmentResult.Appointment) parsed.CreateAppointmentResult.Appointment = {};
+            parsed.CreateAppointmentResult.Appointment.AppointmentID = appointmentId;
+            parsed.CreateAppointmentResult.Appointment.AppointmentId = appointmentId;
+            parsed.CreateAppointmentResult.Appointment.id = appointmentId;
+            return parsed;
           }
-          if (!parsed.CreateAppointmentResult.Appointment) {
-            parsed.CreateAppointmentResult.Appointment = {};
-          }
-          parsed.CreateAppointmentResult.Appointment.AppointmentID = appointmentId;
-          parsed.CreateAppointmentResult.Appointment.AppointmentId = appointmentId;
-          parsed.CreateAppointmentResult.Appointment.id = appointmentId;
         }
-        
-        return parsed;
+
+        const lastErr = typeof rawXml === 'string' && rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
+        throw new Error(`Tebra CreateAppointment failed: ${(lastErr && lastErr[1]) || 'No AppointmentID in response'}`);
       }
 
       const client = await this.getClient();
