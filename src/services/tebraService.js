@@ -105,6 +105,9 @@ class TebraService {
     if (methodName === 'GetAppointmentReasons') {
       return this.generateGetAppointmentReasonsSOAPXML(fields);
     }
+    if (methodName === 'UpdatePatient') {
+      return this.generateUpdatePatientSOAPXML(fields);
+    }
     
     // Build fields XML - match the working template exactly (with XML escaping)
     const fieldsXml = Object.keys(fields).length > 0 ? 
@@ -199,33 +202,33 @@ ${patientXml}        </sch:Patient>
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
     
-    // Field order: PracticeId MUST appear before StartTime (server error: "Expecting element 'PracticeId'" when StartTime was seen first)
+    // Field order per Tebra 4.14 CreateAppointment: required elements first to avoid "Error translating AppointmentCreate to CreateAppointmentV3Request"
     const requiredFieldOrder = [
+      'PracticeId',
+      'ServiceLocationId',
+      'AppointmentStatus',
+      'StartTime',
+      'EndTime',
+      'IsRecurring',
+      'PatientSummary',
+      'AppointmentReasonId',
+      'ProviderId',
+      'ResourceId',
+      'ResourceIds',
+      'AppointmentType',
+      'WasCreatedOnline',
       'AppointmentMode',
       'AppointmentName',
-      'AppointmentReasonId',
-      'AppointmentStatus',
-      'AppointmentType',
       'AttendeesCount',
-      'EndTime',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
       'IsGroupAppointment',
-      'IsRecurring',
       'MaxAttendees',
       'Notes',
       'PatientCaseId',
       'PatientSummaries',
-      'PatientSummary',
       'PatientId',
-      'PracticeId',   // MUST be before StartTime
-      'ProviderId',
-      'RecurrenceRule',
-      'ResourceId',
-      'ResourceIds',
-      'ServiceLocationId',
-      'StartTime',
-      'WasCreatedOnline'
+      'RecurrenceRule'
     ];
     
     const buildAppointmentXml = (data, indent = '         ') => {
@@ -258,7 +261,7 @@ ${patientXml}        </sch:Patient>
                 xml += buildAppointmentXml(item, indent + '      ');
                 xml += `${indent}   </sch:GroupPatientSummary>\n`;
               } else {
-                xml += `${indent}   <arr:long>${item}</arr:long>\n`;
+                xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
               }
             }
             xml += `${indent}</sch:${key}>\n`;
@@ -270,10 +273,10 @@ ${patientXml}        </sch:Patient>
         } else {
           if (key === 'StartTime' || key === 'EndTime') {
             let dateValue = value instanceof Date ? value.toISOString() : (typeof value === 'string' ? (() => { try { const p = new Date(value); return !isNaN(p.getTime()) ? p.toISOString() : value; } catch (e) { return value; } })() : String(value ?? ''));
-            xml += `${indent}<sch:${key}>${dateValue}</sch:${key}>\n`;
+            xml += `${indent}<sch:${key}>${this.xmlEscape(String(dateValue))}</sch:${key}>\n`;
           } else {
             const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
-            xml += `${indent}<sch:${key}>${finalValue}</sch:${key}>\n`;
+            xml += `${indent}<sch:${key}>${this.xmlEscape(String(finalValue))}</sch:${key}>\n`;
           }
         }
       }
@@ -299,7 +302,7 @@ ${patientXml}        </sch:Patient>
                 xml += `${indent}   </sch:GroupPatientSummary>\n`;
               } else {
                 // Handle simple array items like ResourceIds
-                xml += `${indent}   <arr:long>${item}</arr:long>\n`;
+                xml += `${indent}   <arr:long>${this.xmlEscape(String(item))}</arr:long>\n`;
               }
             }
             xml += `${indent}</sch:${key}>\n`;
@@ -310,9 +313,9 @@ ${patientXml}        </sch:Patient>
           xml += buildAppointmentXml(value, indent + '   ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          // Handle simple values
+          // Handle simple values (xmlEscape avoids parsing issues from &, <, > in Notes etc.)
           const finalValue = value instanceof Date ? value.toISOString() : (value === null ? '' : value);
-          xml += `${indent}<sch:${key}>${finalValue}</sch:${key}>\n`;
+          xml += `${indent}<sch:${key}>${this.xmlEscape(String(finalValue))}</sch:${key}>\n`;
         }
       }
       
@@ -421,6 +424,46 @@ ${appointmentXml}
         <sch:PracticeId>${this.xmlEscape(practiceId)}</sch:PracticeId>
       </sch:request>
     </sch:GetAppointmentReasons>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+  }
+
+  // Generate UpdatePatient SOAP XML (RequestHeader + Practice + Patient). xmlEscape on all scalars to avoid InternalServiceFault from special chars in Password or patient data.
+  generateUpdatePatientSOAPXML(fields) {
+    const auth = this.buildRequestHeader();
+    const buildNodeXml = (data, indent = '          ') => {
+      if (!data || typeof data !== 'object') return '';
+      let xml = '';
+      for (const [key, value] of Object.entries(data)) {
+        if (value === null || value === undefined) continue;
+        if (typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+          const inner = buildNodeXml(value, indent + '   ');
+          xml += `${indent}<sch:${key}>\n${inner}${indent}</sch:${key}>\n`;
+        } else {
+          xml += `${indent}<sch:${key}>${this.xmlEscape(String(value))}</sch:${key}>\n`;
+        }
+      }
+      return xml;
+    };
+    const hasPractice = fields?.Practice && Object.values(fields.Practice || {}).some(v => v != null);
+    const practiceXml = hasPractice ? `        <sch:Practice>\n${buildNodeXml(fields.Practice, '          ')}        </sch:Practice>\n` : '';
+    const patientXml = fields?.Patient ? buildNodeXml(fields.Patient, '          ') : '';
+    return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <sch:UpdatePatient>
+      <sch:request>
+        <sch:RequestHeader>
+          <sch:CustomerKey>${this.xmlEscape(auth.CustomerKey)}</sch:CustomerKey>
+          <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
+          <sch:User>${this.xmlEscape(auth.User)}</sch:User>
+        </sch:RequestHeader>
+        ${practiceXml}
+        <sch:Patient>
+${patientXml}        </sch:Patient>
+      </sch:request>
+    </sch:UpdatePatient>
   </soapenv:Body>
 </soapenv:Envelope>`;
   }
@@ -1677,15 +1720,13 @@ ${appointmentXml}
 
   async updatePatient(patientId, updates) {
     try {
-      const client = await this.getClient();
-      
       // Build the request structure per Tebra 4.21: RequestHeader (CustomerKey, User, Password only), Practice (required, at request level), Patient.
       // RequestHeader must NOT include PracticeId (Tebra 2.3). Practice is a sibling to Patient in the request.
       const args = {
         UpdatePatientReq: {
           RequestHeader: this.buildRequestHeader(),
           Practice: {
-            PracticeID: updates.practice?.id,
+            PracticeID: updates.practice?.id || process.env.TEBRA_PRACTICE_ID,
             PracticeName: this.practiceName || updates.practice?.name
           },
           Patient: {
@@ -1796,9 +1837,27 @@ ${appointmentXml}
         }
       };
 
+      // Raw SOAP path: xmlEscape on RequestHeader and body avoids InternalServiceFault from special chars (e.g. Password)
+      if (this.useRawSOAP) {
+        const payload = { Practice: args.UpdatePatientReq.Practice, Patient: args.UpdatePatientReq.Patient };
+        const rawXml = await this.callRawSOAPMethod('UpdatePatient', payload, {});
+        const faultMatch = String(rawXml).match(/<faultstring[^>]*>([^<]*)<\/faultstring>/i);
+        if (faultMatch && faultMatch[1]) {
+          const err = new Error(faultMatch[1].trim());
+          console.warn('[APPOINTMENT BOOKING] UpdatePatient raw SOAP fault:', faultMatch[1]);
+          throw err;
+        }
+        const parsed = this.parseRawSOAPResponse(rawXml, 'UpdatePatient');
+        const errResp = parsed?.UpdatePatientResult?.ErrorResponse;
+        if (errResp && errResp.IsError === true) {
+          throw new Error(errResp.ErrorMessage || 'UpdatePatient failed');
+        }
+        return this.normalizeGetPatientResponse(parsed?.UpdatePatientResult || parsed) || { success: true };
+      }
+
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
-      
+      const client = await this.getClient();
       console.log("UpdatePatient args:", JSON.stringify(args, null, 2));
       const [result] = await client.UpdatePatientAsync(args);
       console.log("UpdatePatient result:", result);
