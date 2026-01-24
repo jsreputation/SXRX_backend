@@ -202,25 +202,25 @@ ${patientXml}        </sch:Patient>
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
     
-    // Field order: deserializer expects one of AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus *first*.
-    // PracticeId/ServiceLocationId must not be first ('PracticeId is not expected. Expecting element AppointmentId|AppointmentMode|...').
+    // Field order from deserializer errors: (1) first: AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus
+    // (2) then: AppointmentUUID|AttendeesCount|CreatedAt|CreatedBy|CustomerId|EndTime — PracticeId must come after these.
     const requiredFieldOrder = [
       'AppointmentMode',
       'AppointmentName',
       'AppointmentReasonId',
       'AppointmentStatus',
       'AppointmentType',
+      'AttendeesCount',
+      'EndTime',
       'PracticeId',
       'ServiceLocationId',
       'StartTime',
-      'EndTime',
       'IsRecurring',
       'PatientSummary',
       'ProviderId',
       'ResourceId',
       'ResourceIds',
       'WasCreatedOnline',
-      'AttendeesCount',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
       'IsGroupAppointment',
