@@ -202,23 +202,24 @@ ${patientXml}        </sch:Patient>
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
     
-    // Field order per Tebra 4.14 CreateAppointment: required elements first to avoid "Error translating AppointmentCreate to CreateAppointmentV3Request"
+    // Field order: deserializer expects one of AppointmentId|AppointmentMode|AppointmentName|AppointmentReasonId|AppointmentStatus *first*.
+    // PracticeId/ServiceLocationId must not be first ('PracticeId is not expected. Expecting element AppointmentId|AppointmentMode|...').
     const requiredFieldOrder = [
+      'AppointmentMode',
+      'AppointmentName',
+      'AppointmentReasonId',
+      'AppointmentStatus',
+      'AppointmentType',
       'PracticeId',
       'ServiceLocationId',
-      'AppointmentStatus',
       'StartTime',
       'EndTime',
       'IsRecurring',
       'PatientSummary',
-      'AppointmentReasonId',
       'ProviderId',
       'ResourceId',
       'ResourceIds',
-      'AppointmentType',
       'WasCreatedOnline',
-      'AppointmentMode',
-      'AppointmentName',
       'AttendeesCount',
       'ForRecare',
       'InsurancePolicyAuthorizationId',
