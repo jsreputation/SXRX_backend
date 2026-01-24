@@ -213,7 +213,6 @@ ${patientXml}        </sch:Patient>
       'AppointmentUUID',
       'AttendeesCount',
       'CreatedAt',
-      'CreatedBy',
       'CustomerId',
       'EndTime',
       'ForRecare',
@@ -251,7 +250,7 @@ ${patientXml}        </sch:Patient>
         }
         const skipNullFields = [
           'AppointmentReasonId', 'PatientCaseId', 'InsurancePolicyAuthorizationId',
-          'Notes', 'DateOfBirth', 'PatientSummary', 'AppointmentUUID', 'CreatedBy', 'CustomerId'
+          'Notes', 'DateOfBirth', 'PatientSummary', 'AppointmentUUID', 'CustomerId'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
         const orderCriticalFields = ['ResourceId', 'ResourceIds', 'RecurrenceRule'];
@@ -1314,13 +1313,7 @@ ${appointmentXml}
       EndTime: appointmentData.endTime ?? appointmentData.EndTime,
       AppointmentUUID: appointmentData.appointmentUUID ?? (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : null),
       CreatedAt: appointmentData.createdAt ?? now,
-      // CreatedBy must be Int64 (user ID), not email. Options: (1) omit — leave TEBRA_CREATED_BY_ID unset; (2) set TEBRA_CREATED_BY_ID=123; (3) set TEBRA_CREATED_BY_ID_DEFAULT=1 to try user ID 1 when TEBRA_CREATED_BY_ID is unset.
-      CreatedBy: (() => {
-        const v = appointmentData.createdBy ?? process.env.TEBRA_CREATED_BY_ID ?? process.env.TEBRA_CREATED_BY_ID_DEFAULT;
-        if (v == null || v === '') return null;
-        const n = typeof v === 'number' ? v : parseInt(String(v), 10);
-        return isNaN(n) ? null : n;
-      })(),
+      // CreatedBy omitted: must be Int64 (user ID). We never send it to avoid TEBRA_CREATED_BY_ID and type errors.
       CustomerId: appointmentData.customerId ?? process.env.TEBRA_CUSTOMER_ID ?? null,
       ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
       InsurancePolicyAuthorizationId: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId),
@@ -2379,14 +2372,27 @@ ${appointmentXml}
         let attempt = 0;
         const errTranslate = 'Error translating AppointmentCreate to CreateAppointmentV3Request';
 
-        while (attempt < 2) {
+        while (attempt < 3) {
           attempt++;
           if (attempt === 2) {
             payload = { ...appointment };
             delete payload.ResourceId;
             delete payload.ResourceIds;
             delete payload.Notes;
-            console.log('🔄 [TEBRA] Retrying CreateAppointment without ResourceId, ResourceIds, Notes (previous: ' + errTranslate + ')');
+            console.log('🔄 [TEBRA] Retry ' + attempt + ': without ResourceId, ResourceIds, Notes');
+          } else if (attempt === 3) {
+            payload = { ...appointment };
+            delete payload.ResourceId;
+            delete payload.ResourceIds;
+            delete payload.Notes;
+            delete payload.CreatedBy;
+            delete payload.CreatedAt;
+            delete payload.AppointmentUUID;
+            delete payload.CustomerId;
+            delete payload.ForRecare;
+            delete payload.IsGroupAppointment;
+            delete payload.MaxAttendees;
+            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal (no CreatedBy, CreatedAt, AppointmentUUID, CustomerId, ForRecare, IsGroupAppointment, MaxAttendees)');
           }
 
           rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
@@ -2417,7 +2423,8 @@ ${appointmentXml}
             const errorMsg = errorMatch && errorMatch[1] ? errorMatch[1].trim() : null;
             if (errorMsg) console.error(`❌ [TEBRA] Error message in CreateAppointment response: ${errorMsg}`);
             if (errorMsg && errorMsg.toLowerCase() !== 'success') {
-              if (errorMsg === errTranslate && attempt === 1) continue;
+              if (errorMsg === errTranslate && attempt < 3) continue;
+              if (errorMsg === errTranslate && attempt === 3) break;
               throw new Error(`Tebra CreateAppointment failed: ${errorMsg}`);
             }
             const isErrorMatch = rawXml.match(/<IsError[^>]*>([^<]+)<\/IsError>/i);
@@ -2436,11 +2443,11 @@ ${appointmentXml}
           }
         }
 
-        // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails twice (different XML shape may satisfy CreateAppointmentV3)
+        // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails 3x (WSDL-shaped XML may satisfy CreateAppointmentV3)
         try {
-          console.log('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP failed twice)');
+          console.log('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP retries exhausted)');
           const client = await this.getClient();
-          const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: appointment } };
+          const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: payload || appointment } };
           this.cleanRequestData(args);
           const [result] = await client.CreateAppointmentAsync(args);
           return this.normalizeCreateAppointmentResponse(result);
@@ -2468,7 +2475,6 @@ ${appointmentXml}
             AppointmentUUID: appointmentData.appointmentUUID,
             AttendeesCount: appointmentData.attendeesCount,
             CreatedAt: appointmentData.createdAt,
-            CreatedBy: appointmentData.createdBy,
             CustomerId: appointmentData.customerId,
             EndTime: appointmentData.endTime,
             ForRecare: appointmentData.forRecare,
