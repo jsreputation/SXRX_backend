@@ -1314,7 +1314,13 @@ ${appointmentXml}
       EndTime: appointmentData.endTime ?? appointmentData.EndTime,
       AppointmentUUID: appointmentData.appointmentUUID ?? (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : null),
       CreatedAt: appointmentData.createdAt ?? now,
-      CreatedBy: appointmentData.createdBy ?? process.env.TEBRA_USER ?? null,
+      // CreatedBy must be Int64 (user ID), not email. Options: (1) omit — leave TEBRA_CREATED_BY_ID unset; (2) set TEBRA_CREATED_BY_ID=123; (3) set TEBRA_CREATED_BY_ID_DEFAULT=1 to try user ID 1 when TEBRA_CREATED_BY_ID is unset.
+      CreatedBy: (() => {
+        const v = appointmentData.createdBy ?? process.env.TEBRA_CREATED_BY_ID ?? process.env.TEBRA_CREATED_BY_ID_DEFAULT;
+        if (v == null || v === '') return null;
+        const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+        return isNaN(n) ? null : n;
+      })(),
       CustomerId: appointmentData.customerId ?? process.env.TEBRA_CUSTOMER_ID ?? null,
       ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
       InsurancePolicyAuthorizationId: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId),
