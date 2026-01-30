@@ -26,10 +26,9 @@ function cacheSet(key, value) {
   tokenCache.set(key, { at: Date.now(), value });
 }
 
-async function verifyJwtBearer(authHeader) {
+function verifyJwtToken(token) {
   try {
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-    const token = authHeader.slice('Bearer '.length).trim();
+    if (!token) return null;
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     // Short-circuit if embedded Shopify token is known expired
     if (payload.shopifyExpiresAt) {
@@ -49,6 +48,24 @@ async function verifyJwtBearer(authHeader) {
       shopifyAccessToken: payload.shopifyAccessToken, // expose for downstream controllers (e.g., /me)
       payload,
     };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function verifyJwtBearer(authHeader) {
+  try {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.slice('Bearer '.length).trim();
+    return verifyJwtToken(token);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function verifyJwtCookie(cookieToken) {
+  try {
+    return verifyJwtToken(cookieToken);
   } catch (_) {
     return null;
   }
@@ -116,7 +133,15 @@ const auth = async (req, res, next) => {
       return next();
     }
 
-    // 2) Fallback: Shopify Customer Access Token in custom header
+    // 2) Fallback: JWT from HttpOnly cookie
+    const cookieToken = req.cookies?.sxrx_jwt;
+    const cookiePrincipal = await verifyJwtCookie(cookieToken);
+    if (cookiePrincipal) {
+      req.user = cookiePrincipal;
+      return next();
+    }
+
+    // 3) Fallback: Shopify Customer Access Token in custom header
     const shopifyToken = req.header('shopify_access_token');
     const sfPrincipal = await verifyShopifyCustomerToken(shopifyToken);
     if (sfPrincipal) {
@@ -145,7 +170,15 @@ const optionalAuth = async (req, res, next) => {
       return next();
     }
 
-    // 2) Fallback: Shopify Customer Access Token in custom header
+    // 2) Fallback: JWT from HttpOnly cookie
+    const cookieToken = req.cookies?.sxrx_jwt;
+    const cookiePrincipal = await verifyJwtCookie(cookieToken);
+    if (cookiePrincipal) {
+      req.user = cookiePrincipal;
+      return next();
+    }
+
+    // 3) Fallback: Shopify Customer Access Token in custom header
     const shopifyToken = req.header('shopify_access_token');
     const sfPrincipal = await verifyShopifyCustomerToken(shopifyToken);
     if (sfPrincipal) {

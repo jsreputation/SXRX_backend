@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const dotenv = require('dotenv');
+const cookieParser = require('cookie-parser');
 const geolocationMiddleware = require('./middleware/geolocation');
 const requestId = require('./middleware/requestId');
 const logger = require('./utils/logger');
@@ -116,6 +117,7 @@ app.use(cors(corsOptions));
 // Ensure preflight OPTIONS always returns CORS headers
 app.options('*', cors(corsOptions));
 app.use(requestId);
+app.use(cookieParser());
 app.use(helmet());
 // Performance monitoring middleware
 const { performanceMonitor, getPerformanceMetrics, getPrometheusMetrics } = require('./middleware/performanceMonitor');
