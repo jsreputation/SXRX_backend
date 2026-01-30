@@ -1516,8 +1516,6 @@ ${appointmentXml}
       // Basic filters - removed PatientID filter to get all appointments
       PatientFullName: safeGet(options, 'patientFullName'),
       PracticeName: safeGet(options, 'practiceName'),
-      PracticeID: safeGet(options, 'practiceId'),
-      ProviderID: safeGet(options, 'providerId'),
       ServiceLocationName: safeGet(options, 'serviceLocationName'),
       ResourceName: safeGet(options, 'resourceName'),
       // Date filters

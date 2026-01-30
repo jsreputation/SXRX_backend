@@ -99,13 +99,20 @@ class AvailabilityCalculator {
       };
 
       // Prefer full ISO datetimes (startDateTime/endDateTime or StartTime/EndTime); exclude cancelled
-      let existingSlots = list.filter(statusOk).map(apt => ({
-        startTime: apt.startDateTime || apt.StartTime || apt.startTime,
-        endTime: apt.endDateTime || apt.EndTime || apt.endTime,
-        startDate: apt.startDate || apt.StartDate,
-        providerId: apt.ProviderID || apt.providerId,
-        practiceId: apt.PracticeID || apt.practiceId
-      }));
+      let existingSlots = list
+        .filter(statusOk)
+        .filter(apt => {
+          if (providerId && String(apt.ProviderID || apt.providerId) !== String(providerId)) return false;
+          if (practiceId && String(apt.PracticeID || apt.practiceId) !== String(practiceId)) return false;
+          return true;
+        })
+        .map(apt => ({
+          startTime: apt.startDateTime || apt.StartTime || apt.startTime,
+          endTime: apt.endDateTime || apt.EndTime || apt.endTime,
+          startDate: apt.startDate || apt.StartDate,
+          providerId: apt.ProviderID || apt.providerId,
+          practiceId: apt.PracticeID || apt.practiceId
+        }));
 
       // Merge recently-booked overlay (covers Tebra eventual consistency)
       if (state && providerId != null) {
