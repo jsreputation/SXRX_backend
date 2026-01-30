@@ -108,7 +108,7 @@ const corsOptions = {
     return cb(new Error('CORS: origin not allowed'));
   },
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token', 'X-CSRF-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'shopify_access_token'],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 };
 
@@ -151,33 +151,6 @@ app.use(morgan(':method :url :status :res[content-length] - :response-time ms re
 // Global JSON parser with default limit (can be overridden per route)
 app.use(express.json({ limit: '1mb' }));
 app.use(geolocationMiddleware);
-
-// CSRF protection (generate tokens for all requests, protect state-changing methods)
-const { csrfTokenGenerator, csrfProtection, getCSRFToken } = require('./middleware/csrf');
-const cookieParser = require('cookie-parser');
-app.use(cookieParser());
-
-// Generate CSRF tokens for all requests
-app.use(csrfTokenGenerator());
-
-// Apply CSRF protection to state-changing methods (exclude webhooks and public endpoints)
-app.use(csrfProtection({
-  requireToken: process.env.CSRF_REQUIRED !== 'false', // Can be disabled via env var
-  excludedMethods: ['GET', 'HEAD', 'OPTIONS'],
-  excludedPaths: [
-    '/webhooks',
-    '/api/webhooks',
-    '/health',
-    '/api/health',
-    '/api/public',
-    '/api/csrf-token', // Token endpoint itself
-    '/api/tebra-appointment/book', // Temporarily excluded - uses auth middleware (JWT/Shopify token) for protection
-    '/api/appointments/book' // Temporarily excluded - direct booking endpoint (will be secured with rate limiting and validation)
-  ]
-}));
-
-// CSRF token endpoint
-app.get('/api/csrf-token', getCSRFToken);
 
 // API Documentation (Swagger)
 const { swaggerSpec, swaggerUi } = require('./swagger');
@@ -228,29 +201,6 @@ const dbModule = require('./db/pg');
     // Don't crash the server, but log the error
   }
 })();
-
-// Graceful shutdown - close job queues
-process.on('SIGTERM', async () => {
-  logger.info('[SHUTDOWN] SIGTERM received, closing job queues...');
-  try {
-    const jobQueueService = require('./services/jobQueue');
-    await jobQueueService.close();
-  } catch (error) {
-    logger.error('[SHUTDOWN] Error closing job queues', { error: error.message });
-  }
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('[SHUTDOWN] SIGINT received, closing job queues...');
-  try {
-    const jobQueueService = require('./services/jobQueue');
-    await jobQueueService.close();
-  } catch (error) {
-    logger.error('[SHUTDOWN] Error closing job queues', { error: error.message });
-  }
-  process.exit(0);
-});
 
 // Global error handler (must be last)
 app.use((error, req, res, next) => {
@@ -502,20 +452,6 @@ app.use((req, res) => {
 const { errorHandler } = require('./utils/errorHandler');
 app.use(errorHandler);
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled promise rejection', { reason, promise });
-  // In production, you might want to exit the process
-  // process.exit(1);
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  logger.errorWithContext(error, { type: 'uncaughtException' });
-  // In production, you might want to exit the process
-  // process.exit(1);
-});
-
 const PORT = process.env.PORT || 5000;
 
 const server = app.listen(PORT, () => {
@@ -605,6 +541,13 @@ const gracefulShutdown = (signal) => {
   logger.info(`${signal} signal received: closing HTTP server`);
   server.close(async () => {
     logger.info('HTTP server closed');
+    // Close job queues
+    try {
+      const jobQueueService = require('./services/jobQueue');
+      await jobQueueService.close();
+    } catch (error) {
+      logger.warn('Error closing job queues', { error: error.message });
+    }
     // Close database connections
     try {
       const { ensurePool } = require('./db/pg');

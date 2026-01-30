@@ -195,7 +195,7 @@ router.post('/create', auth, tebraAppointmentController.createAppointment);
  * @swagger
  * /api/tebra-appointment/book:
  *   post:
- *     summary: Book an appointment (alias for create)
+ *     summary: Patient (Shopify customer) sends a booking request to the provider in Tebra (alias for create)
  *     tags: [Appointments]
  *     security:
  *       - bearerAuth: []
@@ -226,7 +226,7 @@ router.post('/create', auth, tebraAppointmentController.createAppointment);
  *       500:
  *         description: Failed to book appointment
  */
-// Friendly alias: POST /book (wraps to create)
+// Friendly alias: POST /book — patient's booking request to provider in Tebra (wraps to create)
 router.post('/book', auth, express.json({ limit: '1mb' }), async (req, res, next) => {
   try {
     const body = req.body || {};

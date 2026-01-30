@@ -262,8 +262,84 @@ async function sendAppointmentConfirmation({ to, patientName, appointment }) {
   }
 }
 
+/**
+ * Send "booking request received" email when the appointment is created as Tentative.
+ * The provider will review in Tebra (Tentative Appointments / Action Required) and confirm;
+ * the patient will get a separate confirmation once the provider approves.
+ *
+ * @param {Object} params
+ * @param {string} params.to - Recipient email address
+ * @param {string} params.patientName - Patient name
+ * @param {Object} params.appointment - Appointment details (id, startTime, endTime, providerName, appointmentType, notes)
+ */
+async function sendBookingRequestReceived({ to, patientName, appointment }) {
+  if (!process.env.SENDGRID_API_KEY) {
+    logger.warn('[APPOINTMENT EMAIL] SendGrid not configured, skipping email');
+    return { success: false, reason: 'SendGrid not configured' };
+  }
+
+  try {
+    const startDate = new Date(appointment.startTime);
+    const endDate = new Date(appointment.endTime);
+    const formattedDate = startDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const formattedStartTime = startDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    const formattedEndTime = endDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+    const emailContent = `
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #2196F3; color: white; padding: 20px; text-align: center; }
+          .content { padding: 20px; background-color: #f9f9f9; }
+          .appointment-details { background-color: white; padding: 15px; margin: 15px 0; border-left: 4px solid #2196F3; }
+          .detail-row { margin: 10px 0; }
+          .label { font-weight: bold; color: #666; }
+          .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header"><h1>Booking Request Received</h1></div>
+          <div class="content">
+            <p>Dear ${patientName || 'Patient'},</p>
+            <p>We have received your booking request. The provider will review it and you will receive a <strong>confirmation email</strong> once it is approved.</p>
+            <div class="appointment-details">
+              <div class="detail-row"><span class="label">Requested date:</span> ${formattedDate}</div>
+              <div class="detail-row"><span class="label">Requested time:</span> ${formattedStartTime} – ${formattedEndTime}</div>
+              ${appointment.providerName ? `<div class="detail-row"><span class="label">Provider:</span> ${appointment.providerName}</div>` : ''}
+              ${appointment.appointmentType ? `<div class="detail-row"><span class="label">Type:</span> ${appointment.appointmentType}</div>` : ''}
+              ${appointment.notes ? `<div class="detail-row"><span class="label">Notes:</span> ${appointment.notes}</div>` : ''}
+            </div>
+            <p>If you have questions, please contact the practice.</p>
+          </div>
+          <div class="footer"><p>This is an automated message. Please do not reply to this email.</p></div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const msg = {
+      to,
+      from: process.env.SENDGRID_FROM || 'noreply@sxrx.com',
+      subject: `Booking Request Received - ${formattedDate} at ${formattedStartTime}`,
+      html: emailContent
+    };
+
+    await sgMail.send(msg);
+    logger.info('[APPOINTMENT EMAIL] Booking-request-received email sent', { to, appointmentId: appointment.id });
+    return { success: true };
+  } catch (error) {
+    logger.error('[APPOINTMENT EMAIL] Failed to send booking-request-received email', { to, appointmentId: appointment.id, error: error.message });
+    throw error;
+  }
+}
+
 module.exports = {
   sendAppointmentConfirmation,
+  sendBookingRequestReceived,
   generateGoogleCalendarLink,
   generateOutlookCalendarLink,
   generateICalContent

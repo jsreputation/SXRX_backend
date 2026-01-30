@@ -1,18 +1,44 @@
 // backend/src/services/tebraService.js
-const soap = require('soap');
 const axios = require('axios');
+const { patientFieldsBasic, patientFieldsComplete } = require('./tebraPatientFields');
+const tebraNormalizers = require('./tebraServiceNormalizers');
+const tebraSoapParsing = require('./tebraServiceSoapParsing');
+
+// Ensure Tebra SOAP URLs use 2.1 only (not 3.x). Project uses SOAP 2.1.
+function ensureSoap21Url(url) {
+  if (!url || typeof url !== 'string') return url;
+  const base = url.split('?')[0];
+  const rewritten = base.replace(/\/soap\/3(\.\d+)?/g, '/soap/2.1');
+  if (rewritten !== base) {
+    console.warn(`[TEBRA] SOAP URL contained soap/3.x; overridden to soap/2.1. Project uses SOAP 2.1 only.`);
+  }
+  return rewritten;
+}
+
+function resolveSoapUrls(input) {
+  if (!input || typeof input !== 'string') {
+    return { endpoint: input, wsdlUrl: input };
+  }
+  const hasWsdl = /[?&]wsdl\b/i.test(input);
+  const base = ensureSoap21Url(input);
+  return {
+    endpoint: base,
+    wsdlUrl: hasWsdl ? `${base}?wsdl` : `${base}?wsdl`
+  };
+}
 
 class TebraService {
   constructor() {
-    this.wsdlUrl = process.env.TEBRA_SOAP_WSDL || process.env.TEBRA_SOAP_ENDPOINT;
-    this.soapEndpoint = process.env.TEBRA_SOAP_ENDPOINT || 'https://webservice.kareo.com/services/soap/2.1/KareoServices.svc';
+    const soapConfig = resolveSoapUrls(
+      process.env.TEBRA_SOAP_ENDPOINT || 'https://webservice.kareo.com/services/soap/2.1/KareoServices.svc?wsdl'
+    );
+    this.soapEndpoint = soapConfig.endpoint;
+    this.wsdlUrl = soapConfig.wsdlUrl;
     this.customerKey = process.env.TEBRA_CUSTOMER_KEY;
     this.password = process.env.TEBRA_PASSWORD;
     this.user = process.env.TEBRA_USER;
     this.practiceName = process.env.TEBRA_PRACTICE_NAME;
     this.namespace = process.env.TEBRA_SOAP_NAMESPACE || 'http://www.kareo.com/api/schemas/';
-    this.clientPromise = null;
-    this.useRawSOAP = process.env.TEBRA_USE_RAW_SOAP !== 'false'; // Default to true unless explicitly disabled
     
     // API rate limiting configuration
     this.batchSize = parseInt(process.env.TEBRA_BATCH_SIZE) || 5;
@@ -21,38 +47,16 @@ class TebraService {
     this.delayAfterGetIds = parseInt(process.env.TEBRA_DELAY_AFTER_GET_IDS) || 500; // ms
   }
 
-  async getClient() {
-    try {
-      if (!this.clientPromise) {
-        console.log(`🔗 Initializing Tebra SOAP client with WSDL: ${this.wsdlUrl}`);
-        this.clientPromise = soap.createClientAsync(this.wsdlUrl);
-      }
-      const client = await this.clientPromise;
-      return client;
-    } catch (error) {
-      console.error('Tebra SOAP: Failed to initialize client', error.message);
-      this.clientPromise = null; // Reset on error to allow retry
-      throw error;
-    }
-  }
-
-  // Connection test method (matches working client)
+  // Connection test method
   async testConnection() {
     try {
       console.log(`🔗 Tebra/Kareo SOAP client ready`);
-      console.log(`📍 SOAP Endpoint: ${this.soapEndpoint}`);
+      console.log(`SOAP Endpoint: ${this.soapEndpoint}`);
       console.log(`🏥 Practice: ${this.practiceName}`);
       console.log(`👤 User: ${this.user}`);
-      
-      if (this.useRawSOAP) {
-        console.log('✅ Raw SOAP mode enabled');
-        console.log('✅ Client initialized successfully');
-        return { success: true, mode: 'raw' };
-      } else {
-        const client = await this.getClient();
-        console.log('✅ SOAP client initialized successfully');
-        return { success: true, mode: 'soap', client: !!client };
-      }
+      console.log('✅ Raw SOAP mode enabled');
+      console.log('✅ Client initialized successfully');
+      return { success: true, mode: 'raw' };
     } catch (error) {
       console.error('❌ Connection test failed:', error.message);
       return { success: false, error: error.message };
@@ -64,29 +68,64 @@ class TebraService {
     return await this.testConnection();
   }
 
-  // Helper method to build RequestHeader; optionally include PracticeId if provided
+  // Get SOAP client (restored original implementation)
+  async getClient() {
+    if (this.client) {
+      return this.client;
+    }
+
+    try {
+      const soap = require('soap');
+      
+      // Create SOAP client with WSDL
+      const wsdlUrl = this.wsdlUrl || `${this.soapEndpoint}?wsdl`;
+      console.log(`🔗 Creating SOAP client from WSDL: ${wsdlUrl}`);
+      
+      this.client = await soap.createClientAsync(wsdlUrl, {
+        endpoint: this.soapEndpoint,
+        forceSoap12Headers: false,
+        preserveWhitespace: true
+      });
+      
+      console.log('✅ SOAP client created successfully');
+      return this.client;
+      
+    } catch (error) {
+      console.error('❌ Failed to create SOAP client:', error.message);
+      throw new Error(`Failed to create Tebra SOAP client: ${error.message}`);
+    }
+  }
+
+  // Helper method to build RequestHeader - follows official Tebra documentation
   buildRequestHeader(practiceId) {
     const header = {
       CustomerKey: this.customerKey,
       Password: this.password,
       User: this.user
     };
-    if (practiceId) {
-      header.PracticeId = practiceId;
-    }
     return header;
   }
 
-  // Get auth header (matches working client)
+  // Get auth header (backward compatibility)
   getAuthHeader() {
     return this.buildRequestHeader();
   }
 
-  // Generate raw SOAP XML exactly like the working client
+  // Enhanced SOAP XML generation following official Tebra patterns
   generateRawSOAPXML(methodName, fields = {}, filters = {}) {
     const auth = this.getAuthHeader();
     
-    // Special handling for CreatePatient, CreateAppointment, and GetAppointment methods
+    // Validate required parameters
+    if (!methodName || typeof methodName !== 'string' || methodName.trim() === '') {
+      throw new Error('Method name is required and cannot be empty');
+    }
+    
+    // Validate required authentication fields
+    if (!auth.CustomerKey || !auth.User || !auth.Password) {
+      throw new Error('Missing required authentication fields: CustomerKey, User, and Password are required');
+    }
+    
+    // Special handling for specific methods with custom XML structures
     if (methodName === 'CreatePatient') {
       return this.generateCreatePatientSOAPXML(fields);
     }
@@ -109,27 +148,39 @@ class TebraService {
       return this.generateUpdatePatientSOAPXML(fields);
     }
     
-    // Build fields XML - match the working template exactly (with XML escaping)
-    const fieldsXml = Object.keys(fields).length > 0 ? 
-      Object.keys(fields).map(key => 
-        `          <sch:${key}>${this.xmlEscape(String(fields[key]))}</sch:${key}>`
-      ).join('\n') : '';
+    // Some methods require Fields/Filter to use the sch1 namespace prefix.
+    const useAltPrefix = methodName === 'GetServiceLocations';
+    const fieldsPrefix = useAltPrefix ? 'sch1' : 'sch';
+    const filterPrefix = useAltPrefix ? 'sch1' : 'sch';
+    const envelopeNamespaces = useAltPrefix
+      ? '                  xmlns:sch1="http://www.kareo.com/api/schemas/"'
+      : '';
+
+    // Build fields XML with proper validation and escaping
+    const fieldsXml = Object.keys(fields).length > 0 ?
+      Object.keys(fields)
+        .filter(key => fields[key] !== undefined && fields[key] !== null)
+        .map(key => `          <${fieldsPrefix}:${key}>${this.xmlEscape(String(fields[key]))}</${fieldsPrefix}:${key}>`)
+        .join('\n') : '';
     
-    // Build filters XML - match the working template exactly (with XML escaping)
-    // Filter out undefined/null values to prevent API errors
+    // Build filters XML with proper validation
     const validFilters = Object.keys(filters).length > 0 ?
       Object.keys(filters).filter(key => 
-        filters[key] !== undefined && filters[key] !== null && filters[key] !== ''
+        filters[key] !== undefined && 
+        filters[key] !== null && 
+        filters[key] !== ''
       ) : [];
     
     const filtersXml = validFilters.length > 0 ?
       validFilters.map(key =>
-        `          <sch:${key}>${this.xmlEscape(String(filters[key]))}</sch:${key}>`
+        `          <${filterPrefix}:${key}>${this.xmlEscape(String(filters[key]))}</${filterPrefix}:${key}>`
       ).join('\n') : '';
     
-    // Return raw SOAP XML string exactly like the working client
-    return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:sch="http://www.kareo.com/api/schemas/">
+    // Generate SOAP envelope following official Tebra format
+    // RequestHeader child elements use the sch: namespace prefix per Tebra SOAP samples.
+    return `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sch="http://www.kareo.com/api/schemas/"${envelopeNamespaces}>
   <soapenv:Header/>
   <soapenv:Body>
     <sch:${methodName}>
@@ -139,45 +190,77 @@ class TebraService {
           <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
           <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
-        <sch:Fields>
+        <${fieldsPrefix}:Fields>
 ${fieldsXml}
-        </sch:Fields>
-        <sch:Filter>
+        </${fieldsPrefix}:Fields>
+        <${filterPrefix}:Filter>
 ${filtersXml}
-        </sch:Filter>
+        </${filterPrefix}:Filter>
       </sch:request>
     </sch:${methodName}>
   </soapenv:Body>
 </soapenv:Envelope>`;
   }
 
-  // Generate CreatePatient SOAP XML with proper structure
+  // Generate CreatePatient SOAP XML following official Tebra documentation
   generateCreatePatientSOAPXML(patientData) {
     const auth = this.getAuthHeader();
     
-    // Build patient XML - handle nested objects properly
-    const buildPatientXml = (data, indent = '         ') => {
+    // Validate required authentication
+    if (!auth.CustomerKey || !auth.User || !auth.Password) {
+      throw new Error('Missing required authentication for CreatePatient');
+    }
+    
+    // Build patient XML with proper nesting and validation
+    const buildPatientXml = (data, indent = '          ') => {
       let xml = '';
-      for (const [key, value] of Object.entries(data)) {
-        if (value === null || value === undefined) continue;
+      
+      // Define the proper field order for patient data (based on Tebra schema)
+      const fieldOrder = [
+        'FirstName', 'LastName', 'MiddleName', 'Suffix',
+        'DateOfBirth', 'Gender', 'SSN', 'ExternalID',
+        'EmailAddress', 'HomePhone', 'MobilePhone', 'WorkPhone',
+        'Address', 'City', 'State', 'ZipCode', 'Country',
+        'Practice', 'PrimaryProvider', 'DefaultCase'
+      ];
+      
+      // Process fields in the correct order
+      for (const key of fieldOrder) {
+        const value = data[key];
+        if (value === null || value === undefined || value === '') continue;
         
         if (typeof value === 'object' && !Array.isArray(value)) {
-          // Handle nested objects like Practice
+          // Handle nested objects like Practice, Address, etc.
           xml += `${indent}<sch:${key}>\n`;
-          xml += buildPatientXml(value, indent + '   ');
+          xml += buildPatientXml(value, indent + '  ');
           xml += `${indent}</sch:${key}>\n`;
         } else {
-          // Handle simple values - escape XML special characters using helper method
-          const escapedValue = this.xmlEscape(String(value));
-          xml += `${indent}<sch:${key}>${escapedValue}</sch:${key}>\n`;
+          // Handle simple values with proper XML escaping
+          xml += `${indent}<sch:${key}>${this.xmlEscape(String(value))}</sch:${key}>\n`;
         }
       }
+      
+      // Add any remaining fields not in the standard order
+      for (const [key, value] of Object.entries(data)) {
+        if (fieldOrder.includes(key) || value === null || value === undefined || value === '') continue;
+        
+        if (typeof value === 'object' && !Array.isArray(value)) {
+          xml += `${indent}<sch:${key}>\n`;
+          xml += buildPatientXml(value, indent + '  ');
+          xml += `${indent}</sch:${key}>\n`;
+        } else {
+          xml += `${indent}<sch:${key}>${this.xmlEscape(String(value))}</sch:${key}>\n`;
+        }
+      }
+      
       return xml;
     };
     
     const patientXml = buildPatientXml(patientData);
     
-    return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+    // Generate SOAP envelope following official Tebra format
+    return `<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:sch="http://www.kareo.com/api/schemas/">
   <soapenv:Header/>
   <soapenv:Body>
@@ -198,7 +281,7 @@ ${patientXml}        </sch:Patient>
 
   // Generate CreateAppointment SOAP XML with proper structure
   // Tebra schema expects element names with ...Id (e.g. PracticeId), not ...ID. Order: PracticeId, PatientSummary before StartTime.
-  // RequestHeader (Tebra 2.3) must contain ONLY CustomerKey, User, Password — PracticeId belongs in the Appointment element only.
+  // RequestHeader (Tebra 2.3) must contain ONLY CustomerKey, Password, User — PracticeId belongs in the Appointment element only.
   generateCreateAppointmentSOAPXML(appointmentData) {
     const auth = this.buildRequestHeader();
     // Map our *ID keys to schema element names (*Id). Tebra .NET deserializer is case-sensitive; wrong casing causes DeserializationFailed.
@@ -214,13 +297,48 @@ ${patientXml}        </sch:Patient>
     };
     const toSchemaName = (k) => SCHEMA_NAME_MAP[k] || k;
 
-    // Order: PatientSummary before StartTime (fault: "Expecting ... PatientSummary | PracticeId", "StartTime is not expected").
+    // Schema: follow strict field ordering (aligns with SOAP spec and CreateAppointmentV3 translator).
+    // Keep PracticeID/PracticeGuid before StartTime, and ProviderID/ResourceID before StartTime.
     const requiredFieldOrder = [
-      'AppointmentMode', 'AppointmentName', 'AppointmentReasonID', 'AppointmentStatus', 'AppointmentType',
-      'AttendeesCount', 'EndTime', 'ForRecare', 'InsurancePolicyAuthorizationID', 'IsGroupAppointment', 'IsRecurring',
-      'PracticeID', 'ServiceLocationID', 'PatientSummary', 'StartTime', 'ProviderID', 'ResourceID', 'ResourceIds',
-      'ProviderGuids', 'ResourceGuids',
-      'WasCreatedOnline', 'MaxAttendees', 'Notes', 'PatientCaseID', 'PatientSummaries', 'PatientID', 'RecurrenceRule'
+      'AppointmentId',
+      'AppointmentMode',
+      'AppointmentName',
+      'AppointmentReasonID',
+      'AppointmentStatus',
+      'AppointmentType',
+      'AppointmentUUID',
+      'AttendeesCount',
+      'CreatedAt',
+      'CreatedBy',
+      'CustomerId',
+      'EndTime',
+      'ForRecare',
+      'InsurancePolicyAuthorizationID',
+      'IsDeleted',
+      'IsGroupAppointment',
+      'IsRecurring',
+      'MaxAttendees',
+      'Notes',
+      'OccurrenceId',
+      'PatientCaseID',
+      'PatientSummaries',
+      'PatientSummary',
+      'PatientGuid',
+      'PatientID',
+      'PracticeID',
+      'PracticeGuid',
+      'ServiceLocationID',
+      'ServiceLocationGuid',
+      'ProviderID',
+      'ProviderGuids',
+      'RecurrenceRule',
+      'ResourceID',
+      'ResourceIds',
+      'ResourceGuids',
+      'StartTime',
+      'UpdatedAt',
+      'UpdatedBy',
+      'WasCreatedOnline'
     ];
 
     const buildAppointmentXml = (data, indent = '         ') => {
@@ -239,6 +357,7 @@ ${patientXml}        </sch:Patient>
           'Notes', 'DateOfBirth', 'PatientSummary'
         ];
         if (value === null && skipNullFields.includes(key)) continue;
+        if (key === 'AppointmentReasonID' && (value === 0 || value === '0')) continue;
         const orderCriticalFields = ['ResourceID', 'ResourceIds', 'RecurrenceRule'];
         if (orderCriticalFields.includes(key) && value === null) continue;
         if ((key === 'StartTime' || key === 'EndTime') && (!value || value === '')) continue;
@@ -430,7 +549,7 @@ ${appointmentXml}
 </soapenv:Envelope>`;
   }
 
-  // Generate UpdatePatient SOAP XML (RequestHeader + Practice + Patient). xmlEscape on all scalars to avoid InternalServiceFault from special chars in Password or patient data.
+  // Generate UpdatePatient SOAP XML (RequestHeader + Patient with Practice). xmlEscape on all scalars to avoid InternalServiceFault from special chars in Password or patient data.
   generateUpdatePatientSOAPXML(fields) {
     const auth = this.buildRequestHeader();
     const buildNodeXml = (data, indent = '          ') => {
@@ -447,10 +566,11 @@ ${appointmentXml}
       }
       return xml;
     };
-    // Tebra 4.21.1: Practice requires at least one of PracticeID, PracticeName. buildNodeXml skips null/undefined.
-    const hasPractice = fields?.Practice && typeof fields.Practice === 'object' && Object.values(fields.Practice).some(v => v != null && String(v).trim() !== '');
-    const practiceXml = hasPractice ? `        <sch:Practice>\n${buildNodeXml(fields.Practice, '          ')}        </sch:Practice>\n` : '';
-    const patientXml = fields?.Patient && typeof fields.Patient === 'object' ? buildNodeXml(fields.Patient, '          ') : '';
+    const patientPayload = fields?.Patient && typeof fields.Patient === 'object' ? { ...fields.Patient } : {};
+    if (!patientPayload.Practice && fields?.Practice && typeof fields.Practice === 'object') {
+      patientPayload.Practice = fields.Practice;
+    }
+    const patientXml = buildNodeXml(patientPayload, '          ');
     return `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:sch="http://www.kareo.com/api/schemas/">
   <soapenv:Header/>
@@ -462,7 +582,6 @@ ${appointmentXml}
           <sch:Password>${this.xmlEscape(auth.Password)}</sch:Password>
           <sch:User>${this.xmlEscape(auth.User)}</sch:User>
         </sch:RequestHeader>
-        ${practiceXml}
         <sch:Patient>
 ${patientXml}        </sch:Patient>
       </sch:request>
@@ -557,43 +676,121 @@ ${appointmentXml}
 </soapenv:Envelope>`;
   }
 
-  // Call SOAP method using raw XML (alternative to soap library)
+  // Enhanced SOAP method caller with improved error handling
   async callRawSOAPMethod(methodName, fields = {}, filters = {}) {
     try {
-      // Generate raw SOAP XML exactly like the working client
+      // Validate inputs
+      if (!methodName) {
+        throw new Error('Method name is required');
+      }
+      
+      // Generate SOAP XML
       const soapXml = this.generateRawSOAPXML(methodName, fields, filters);
       
-      // Log SOAP request XML for CreateAppointment (truncate if too long)
-      if (methodName === 'CreateAppointment') {
+      // Log request for debugging (configurable)
+      if (process.env.TEBRA_DEBUG_REQUESTS === 'true' || methodName === 'CreateAppointment') {
         const requestPreview = soapXml.length > 2000 
           ? soapXml.substring(0, 2000) + '...' 
           : soapXml;
-        console.log('🔍 [TEBRA] CreateAppointment SOAP request XML (preview):', requestPreview);
-        // Also log just the StartTime/EndTime parts
-        const startTimeMatch = soapXml.match(/<sch:StartTime[^>]*>([^<]+)<\/sch:StartTime>/i);
-        const endTimeMatch = soapXml.match(/<sch:EndTime[^>]*>([^<]+)<\/sch:EndTime>/i);
-        if (startTimeMatch) console.log(`🔍 [TEBRA] StartTime in XML: ${startTimeMatch[1]}`);
-        if (endTimeMatch) console.log(`🔍 [TEBRA] EndTime in XML: ${endTimeMatch[1]}`);
+        console.log(`🔍 [TEBRA] ${methodName} SOAP request XML:`, requestPreview);
+        
+        // Log specific fields for appointment methods
+        if (methodName === 'CreateAppointment') {
+          const startTimeMatch = soapXml.match(/<sch:StartTime[^>]*>([^<]+)<\/sch:StartTime>/i);
+          const endTimeMatch = soapXml.match(/<sch:EndTime[^>]*>([^<]+)<\/sch:EndTime>/i);
+          if (startTimeMatch) console.log(`🔍 [TEBRA] StartTime: ${startTimeMatch[1]}`);
+          if (endTimeMatch) console.log(`🔍 [TEBRA] EndTime: ${endTimeMatch[1]}`);
+        }
       }
       
-      const { data } = await axios.post(
+      // Make SOAP request with proper headers
+      const response = await axios.post(
         this.soapEndpoint,
         soapXml,
         {
           headers: {
             'Content-Type': 'text/xml; charset=utf-8',
-            'SOAPAction': `"http://www.kareo.com/api/schemas/KareoServices/${methodName}"`
-          }
+            'SOAPAction': `"http://www.kareo.com/api/schemas/KareoServices/${methodName}"`,
+            'User-Agent': 'Tebra-SOAP-Client/1.0'
+          },
+          timeout: 30000, // 30 second timeout
+          validateStatus: (status) => status < 500 // Accept 4xx as valid responses
         }
       );
       
-      return data;
-    } catch (error) {
-      console.error(`❌ [TEBRA] Error calling ${methodName}:`, error.message);
-      if (error.response) {
-        console.error('Response data:', error.response.data);
+      // Log response for debugging
+      if (process.env.TEBRA_DEBUG_RESPONSES === 'true') {
+        const responsePreview = response.data.length > 2000 
+          ? response.data.substring(0, 2000) + '...' 
+          : response.data;
+        console.log(`🔍 [TEBRA] ${methodName} SOAP response:`, responsePreview);
       }
-      throw error;
+      
+      // Check for SOAP faults in response
+      if (response.data.includes('soap:Fault') || response.data.includes('soapenv:Fault')) {
+        const faultMatch = response.data.match(/<faultstring[^>]*>([^<]+)<\/faultstring>/i);
+        const faultCode = response.data.match(/<faultcode[^>]*>([^<]+)<\/faultcode>/i);
+        
+        const errorMessage = faultMatch ? faultMatch[1] : 'Unknown SOAP fault';
+        const errorCode = faultCode ? faultCode[1] : 'Unknown';
+        
+        throw new Error(`Tebra SOAP Fault [${errorCode}]: ${errorMessage}`);
+      }
+      
+      // Check for Tebra-specific error responses
+      if (response.data.includes('<IsError>true</IsError>')) {
+        const errorMatch = response.data.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
+        const errorMessage = errorMatch ? errorMatch[1] : 'Unknown Tebra API error';
+        throw new Error(`Tebra API Error: ${errorMessage}`);
+      }
+      
+      if (process.env.TEBRA_DEBUG_AUTH === 'true') {
+        console.log('[TEBRA DEBUG] Response preview:', response.data.substring(0, 500));
+        const authenticated = response.data.includes('<Authenticated>true</Authenticated>');
+        const customerKeyValid = response.data.includes('<CustomerKeyValid>true</CustomerKeyValid>');
+        const authorized = response.data.includes('<Authorized>true</Authorized>');
+        const isError = response.data.includes('<IsError>true</IsError>');
+        console.log('[TEBRA DEBUG] Auth status:', { authenticated, customerKeyValid, authorized, isError });
+      }
+
+      // Check for authentication/authorization failures
+      // Tebra doesn't use SecurityResultSuccess - check actual response format
+      if (response.data.includes('<Authenticated>false</Authenticated>')) {
+        const securityMatch = response.data.match(/<SecurityResult[^>]*>([^<]*)<\/SecurityResult>/i);
+        const securityMessage = securityMatch ? securityMatch[1] : 'Invalid user name and/or password';
+        throw new Error(`Tebra Authentication Error: ${securityMessage}`);
+      }
+      
+      // Check for customer key validation failures
+      if (response.data.includes('<CustomerKeyValid>false</CustomerKeyValid>')) {
+        throw new Error('Tebra Authentication Error: Invalid customer key');
+      }
+      
+      return response.data;
+      
+    } catch (error) {
+      // Enhanced error logging
+      console.error(`❌ [TEBRA] ${methodName} failed:`, error.message);
+      
+      if (error.response) {
+        console.error(`   Status: ${error.response.status}`);
+        console.error(`   Headers:`, error.response.headers);
+        
+        // Log response data (truncated for readability)
+        const responseData = error.response.data;
+        if (typeof responseData === 'string') {
+          const preview = responseData.length > 1000 
+            ? responseData.substring(0, 1000) + '...' 
+            : responseData;
+          console.error(`   Response: ${preview}`);
+        }
+      } else if (error.request) {
+        console.error('   No response received from Tebra API');
+        console.error('   Request timeout or network error');
+      }
+      
+      // Re-throw with context
+      throw new Error(`Tebra ${methodName} API call failed: ${error.message}`);
     }
   }
 
@@ -712,249 +909,12 @@ ${appointmentXml}
 
   // Get comprehensive patient fields (all available fields)
   getPatientFieldsComplete() {
-    return {
-      AddressLine1: 1,
-      AddressLine2: 1,
-      Adjustments: 1,
-      Age: 1,
-      AlertMessage: 1,
-      AlertShowWhenDisplayingPatientDetails: 1,
-      AlertShowWhenEnteringEncounters: 1,
-      AlertShowWhenPostingPayments: 1,
-      AlertShowWhenPreparingPatientStatements: 1,
-      AlertShowWhenSchedulingAppointments: 1,
-      AlertShowWhenViewingClaimDetails: 1,
-      Authorization1ContactFullName: 1,
-      Authorization1ContactPhone: 1,
-      Authorization1ContactPhoneExt: 1,
-      Authorization1EndDate: 1,
-      Authorization1InsurancePlanName: 1,
-      Authorization1Notes: 1,
-      Authorization1Number: 1,
-      Authorization1NumberOfVisits: 1,
-      Authorization1NumberOfVisitsUsed: 1,
-      Authorization1StartDate: 1,
-      Authorization2ContactFullName: 1,
-      Authorization2ContactPhone: 1,
-      Authorization2ContactPhoneExt: 1,
-      Authorization2EndDate: 1,
-      Authorization2InsurancePlanName: 1,
-      Authorization2Notes: 1,
-      Authorization2Number: 1,
-      Authorization2NumberOfVisits: 1,
-      Authorization2NumberOfVisitsUsed: 1,
-      Authorization2StartDate: 1,
-      Authorization3ContactFullName: 1,
-      Authorization3ContactPhone: 1,
-      Authorization3ContactPhoneExt: 1,
-      Authorization3EndDate: 1,
-      Authorization3InsurancePlanName: 1,
-      Authorization3Notes: 1,
-      Authorization3Number: 1,
-      Authorization3NumberOfVisits: 1,
-      Authorization3NumberOfVisitsUsed: 1,
-      Authorization3StartDate: 1,
-      Charges: 1,
-      City: 1,
-      CollectionCategoryName: 1,
-      Country: 1,
-      CreatedDate: 1,
-      DOB: 1,
-      DefaultCaseConditionRelatedToAbuse: 1,
-      DefaultCaseConditionRelatedToAutoAccident: 1,
-      DefaultCaseConditionRelatedToAutoAccidentState: 1,
-      DefaultCaseConditionRelatedToEPSDT: 1,
-      DefaultCaseConditionRelatedToEmergency: 1,
-      DefaultCaseConditionRelatedToEmployment: 1,
-      DefaultCaseConditionRelatedToFamilyPlanning: 1,
-      DefaultCaseConditionRelatedToOther: 1,
-      DefaultCaseConditionRelatedToPregnancy: 1,
-      DefaultCaseDatesAccidentDate: 1,
-      DefaultCaseDatesAcuteManifestationDate: 1,
-      DefaultCaseDatesInjuryEndDate: 1,
-      DefaultCaseDatesInjuryStartDate: 1,
-      DefaultCaseDatesLastMenstrualPeriodDate: 1,
-      DefaultCaseDatesLastSeenDate: 1,
-      DefaultCaseDatesLastXRayDate: 1,
-      DefaultCaseDatesReferralDate: 1,
-      DefaultCaseDatesRelatedDisabilityEndDate: 1,
-      DefaultCaseDatesRelatedDisabilityStartDate: 1,
-      DefaultCaseDatesRelatedHospitalizationEndDate: 1,
-      DefaultCaseDatesRelatedHospitalizationStartDate: 1,
-      DefaultCaseDatesSameOrSimilarIllnessEndDate: 1,
-      DefaultCaseDatesSameOrSimilarIllnessStartDate: 1,
-      DefaultCaseDatesUnableToWorkEndDate: 1,
-      DefaultCaseDatesUnableToWorkStartDate: 1,
-      DefaultCaseDescription: 1,
-      DefaultCaseID: 1,
-      DefaultCaseName: 1,
-      DefaultCasePayerScenario: 1,
-      DefaultCaseReferringProviderFullName: 1,
-      DefaultCaseReferringProviderID: 1,
-      DefaultCaseSendPatientStatements: 1,
-      DefaultRenderingProviderFullName: 1,
-      DefaultRenderingProviderId: 1,
-      DefaultServiceLocationBillingName: 1,
-      DefaultServiceLocationFaxPhone: 1,
-      DefaultServiceLocationFaxPhoneExt: 1,
-      DefaultServiceLocationId: 1,
-      DefaultServiceLocationName: 1,
-      DefaultServiceLocationNameAddressLine1: 1,
-      DefaultServiceLocationNameAddressLine2: 1,
-      DefaultServiceLocationNameCity: 1,
-      DefaultServiceLocationNameCountry: 1,
-      DefaultServiceLocationNameState: 1,
-      DefaultServiceLocationNameZipCode: 1,
-      DefaultServiceLocationPhone: 1,
-      DefaultServiceLocationPhoneExt: 1,
-      EmailAddress: 1,
-      EmergencyName: 1,
-      EmergencyPhone: 1,
-      EmergencyPhoneExt: 1,
-      EmployerName: 1,
-      EmploymentStatus: 1,
-      FirstName: 1,
-      Gender: 1,
-      GuarantorDifferentThanPatient: 1,
-      GuarantorFirstName: 1,
-      GuarantorLastName: 1,
-      GuarantorMiddleName: 1,
-      GuarantorPrefix: 1,
-      GuarantorSuffix: 1,
-      HomePhone: 1,
-      HomePhoneExt: 1,
-      ID: 1,
-      InsuranceBalance: 1,
-      InsurancePayments: 1,
-      LastAppointmentDate: 1,
-      LastDiagnosis: 1,
-      LastEncounterDate: 1,
-      LastModifiedDate: 1,
-      LastName: 1,
-      LastPaymentDate: 1,
-      LastStatementDate: 1,
-      MaritalStatus: 1,
-      MedicalRecordNumber: 1,
-      MiddleName: 1,
-      MobilePhone: 1,
-      MobilePhoneExt: 1,
-      MostRecentNote1Date: 1,
-      MostRecentNote1Message: 1,
-      MostRecentNote1User: 1,
-      MostRecentNote2Date: 1,
-      MostRecentNote2Message: 1,
-      MostRecentNote2User: 1,
-      MostRecentNote3Date: 1,
-      MostRecentNote3Message: 1,
-      MostRecentNote3User: 1,
-      MostRecentNote4Date: 1,
-      MostRecentNote4Message: 1,
-      MostRecentNote4User: 1,
-      PatientBalance: 1,
-      PatientFullName: 1,
-      PatientPayments: 1,
-      PracticeId: 1,
-      PracticeName: 1,
-      Prefix: 1,
-      PrimaryCarePhysicianFullName: 1,
-      PrimaryCarePhysicianId: 1,
-      PrimaryInsurancePolicyCompanyID: 1,
-      PrimaryInsurancePolicyCompanyName: 1,
-      PrimaryInsurancePolicyCopay: 1,
-      PrimaryInsurancePolicyDeductible: 1,
-      PrimaryInsurancePolicyEffectiveEndDate: 1,
-      PrimaryInsurancePolicyEffectiveStartDate: 1,
-      PrimaryInsurancePolicyGroupNumber: 1,
-      PrimaryInsurancePolicyInsuredAddressLine1: 1,
-      PrimaryInsurancePolicyInsuredAddressLine2: 1,
-      PrimaryInsurancePolicyInsuredCity: 1,
-      PrimaryInsurancePolicyInsuredCountry: 1,
-      PrimaryInsurancePolicyInsuredDateOfBirth: 1,
-      PrimaryInsurancePolicyInsuredFullName: 1,
-      PrimaryInsurancePolicyInsuredGender: 1,
-      PrimaryInsurancePolicyInsuredIDNumber: 1,
-      PrimaryInsurancePolicyInsuredNotes: 1,
-      PrimaryInsurancePolicyInsuredSocialSecurityNumber: 1,
-      PrimaryInsurancePolicyInsuredState: 1,
-      PrimaryInsurancePolicyInsuredZipCode: 1,
-      PrimaryInsurancePolicyNumber: 1,
-      PrimaryInsurancePolicyPatientRelationshipToInsured: 1,
-      PrimaryInsurancePolicyPlanAddressLine1: 1,
-      PrimaryInsurancePolicyPlanAddressLine2: 1,
-      PrimaryInsurancePolicyPlanAdjusterFullName: 1,
-      PrimaryInsurancePolicyPlanCity: 1,
-      PrimaryInsurancePolicyPlanCountry: 1,
-      PrimaryInsurancePolicyPlanFaxNumber: 1,
-      PrimaryInsurancePolicyPlanFaxNumberExt: 1,
-      PrimaryInsurancePolicyPlanID: 1,
-      PrimaryInsurancePolicyPlanName: 1,
-      PrimaryInsurancePolicyPlanPhoneNumber: 1,
-      PrimaryInsurancePolicyPlanPhoneNumberExt: 1,
-      PrimaryInsurancePolicyPlanState: 1,
-      PrimaryInsurancePolicyPlanZipCode: 1,
-      ReferralSource: 1,
-      ReferringProviderFullName: 1,
-      ReferringProviderId: 1,
-      SSN: 1,
-      SecondaryInsurancePolicyCompanyID: 1,
-      SecondaryInsurancePolicyCompanyName: 1,
-      SecondaryInsurancePolicyCopay: 1,
-      SecondaryInsurancePolicyDeductible: 1,
-      SecondaryInsurancePolicyEffectiveEndDate: 1,
-      SecondaryInsurancePolicyEffectiveStartDate: 1,
-      SecondaryInsurancePolicyGroupNumber: 1,
-      SecondaryInsurancePolicyInsuredAddressLine1: 1,
-      SecondaryInsurancePolicyInsuredAddressLine2: 1,
-      SecondaryInsurancePolicyInsuredCity: 1,
-      SecondaryInsurancePolicyInsuredCountry: 1,
-      SecondaryInsurancePolicyInsuredDateOfBirth: 1,
-      SecondaryInsurancePolicyInsuredFullName: 1,
-      SecondaryInsurancePolicyInsuredGender: 1,
-      SecondaryInsurancePolicyInsuredIDNumber: 1,
-      SecondaryInsurancePolicyInsuredNotes: 1,
-      SecondaryInsurancePolicyInsuredSocialSecurityNumber: 1,
-      SecondaryInsurancePolicyInsuredState: 1,
-      SecondaryInsurancePolicyInsuredZipCode: 1,
-      SecondaryInsurancePolicyNumber: 1,
-      SecondaryInsurancePolicyPatientRelationshipToInsured: 1,
-      SecondaryInsurancePolicyPlanAddressLine1: 1,
-      SecondaryInsurancePolicyPlanAddressLine2: 1,
-      SecondaryInsurancePolicyPlanAdjusterFullName: 1,
-      SecondaryInsurancePolicyPlanCity: 1,
-      SecondaryInsurancePolicyPlanCountry: 1,
-      SecondaryInsurancePolicyPlanFaxNumber: 1,
-      SecondaryInsurancePolicyPlanFaxNumberExt: 1,
-      SecondaryInsurancePolicyPlanID: 1,
-      SecondaryInsurancePolicyPlanName: 1,
-      SecondaryInsurancePolicyPlanPhoneNumber: 1,
-      SecondaryInsurancePolicyPlanPhoneNumberExt: 1,
-      SecondaryInsurancePolicyPlanState: 1,
-      SecondaryInsurancePolicyPlanZipCode: 1,
-      State: 1,
-      StatementNote: 1,
-      Suffix: 1,
-      TotalBalance: 1,
-      WorkPhone: 1,
-      WorkPhoneExt: 1,
-      ZipCode: 1
-    };
+    return { ...patientFieldsComplete };
   }
 
   // Get basic patient fields only
   getPatientFieldsBasic() {
-    return {
-      ID: 1,
-      FirstName: 1,
-      LastName: 1,
-      DOB: 1,
-      PatientFullName: 1,
-      HomePhone: 1,
-      EmailAddress: 1,
-      AddressLine1: 1,
-      City: 1,
-      State: 1,
-      ZipCode: 1
-    };
+    return { ...patientFieldsBasic };
   }
 
   // Get patients with basic fields only (matches working client)
@@ -1243,7 +1203,7 @@ ${appointmentXml}
     return notes || null;
   }
 
-  // Helper method to look up appointment reason ID by name
+  // Helper method to look up appointment reason ID by numeric ID, GUID (TEBRA_DEFAULT_APPT_REASON_GUID), or name
   async lookupAppointmentReasonId(reasonNameOrId, practiceId) {
     try {
       // If it's already a number, return it
@@ -1251,33 +1211,40 @@ ${appointmentXml}
         return parseInt(reasonNameOrId);
       }
       
-      // If it's a string name, look it up
-      if (typeof reasonNameOrId === 'string' && reasonNameOrId.trim() !== '') {
-        console.log(`🔍 Looking up appointment reason ID for name: "${reasonNameOrId}"`);
-        const reasonsResult = await this.getAppointmentReasons(practiceId);
-        const reasons = reasonsResult.appointmentReasons || [];
-        
-        // Find the reason by name (case-insensitive)
-        const idx = reasons.findIndex(reason => 
-          reason.name && reason.name.toLowerCase() === reasonNameOrId.toLowerCase()
-        );
-        const matchingReason = idx >= 0 ? reasons[idx] : null;
-        
-        if (matchingReason && (matchingReason.id != null || matchingReason.appointmentReasonId != null)) {
-          const id = matchingReason.id ?? matchingReason.appointmentReasonId;
-          console.log(`✅ Found appointment reason ID: ${id} for name: "${reasonNameOrId}"`);
+      if (typeof reasonNameOrId !== 'string' || reasonNameOrId.trim() === '') return null;
+
+      const reasonsResult = await this.getAppointmentReasons(practiceId);
+      const reasons = reasonsResult.appointmentReasons || [];
+      const input = reasonNameOrId.trim();
+
+      // If it's a UUID (e.g. TEBRA_DEFAULT_APPT_REASON_GUID), find by appointmentReasonGuid
+      if (/^[0-9a-fA-F-]{36}$/.test(input)) {
+        const byGuid = reasons.find(r => (r.appointmentReasonGuid || '').toLowerCase() === input.toLowerCase());
+        if (byGuid && (byGuid.id != null || byGuid.appointmentReasonId != null)) {
+          const id = byGuid.id ?? byGuid.appointmentReasonId;
+          console.log(`✅ Found appointment reason ID: ${id} for GUID: "${input}"`);
           return parseInt(String(id), 10);
         }
-        // Name matched but API did not return ID: use 1-based index as last-resort (many Tebra setups use sequential IDs)
-        if (matchingReason && idx >= 0) {
-          const fallbackId = idx + 1;
-          console.log(`⚠️ Using 1-based index as fallback AppointmentReasonID for "${reasonNameOrId}": ${fallbackId}. If CreateAppointment fails, set TEBRA_DEFAULT_APPT_REASON_ID to the real ID from Tebra.`);
-          return fallbackId;
-        }
-        console.log(`⚠️ No appointment reason found for name: "${reasonNameOrId}"`);
+        console.log(`⚠️ No appointment reason found for GUID: "${input}"`);
         return null;
       }
-      
+
+      // Find by name (case-insensitive)
+      console.log(`🔍 Looking up appointment reason ID for name: "${input}"`);
+      const idx = reasons.findIndex(reason => reason.name && reason.name.toLowerCase() === input.toLowerCase());
+      const matchingReason = idx >= 0 ? reasons[idx] : null;
+
+      if (matchingReason && (matchingReason.id != null || matchingReason.appointmentReasonId != null)) {
+        const id = matchingReason.id ?? matchingReason.appointmentReasonId;
+        console.log(`✅ Found appointment reason ID: ${id} for name: "${input}"`);
+        return parseInt(String(id), 10);
+      }
+      if (matchingReason && idx >= 0) {
+        const fallbackId = idx + 1;
+        console.log(`⚠️ Using 1-based index as fallback AppointmentReasonID for "${input}": ${fallbackId}. If CreateAppointment fails, set TEBRA_DEFAULT_APPT_REASON_ID to the real ID from Tebra.`);
+        return fallbackId;
+      }
+      console.log(`⚠️ No appointment reason found for name: "${input}"`);
       return null;
     } catch (error) {
       console.error(`❌ Error looking up appointment reason ID for "${reasonNameOrId}":`, error.message);
@@ -1285,7 +1252,8 @@ ${appointmentXml}
     }
   }
 
-  // Build appointment data for CreateAppointment SOAP call
+  // Build appointment data for CreateAppointment SOAP call.
+  // Tebra 4.14.1 The Request: only required fields. Optional fields omitted.
   async buildAppointmentData(appointmentData) {
     const parseId = (value) => {
       if (value === null || value === undefined || value === '') return undefined;
@@ -1294,112 +1262,52 @@ ${appointmentXml}
       return value;
     };
 
-    // Tebra API 4.14.1: only send fields defined in the guide. Omit AppointmentUUID, CreatedAt, CustomerId, IsDeleted, CreatedBy.
+    const practiceID = (() => {
+      const v = appointmentData.practiceId ?? appointmentData.PracticeId ?? '1';
+      const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
+      if (isNaN(parsed)) { console.error(`❌ [TEBRA] Invalid PracticeID: ${v}, using 1`); return 1; }
+      return parsed;
+    })();
+    const providerID = (() => {
+      const v = appointmentData.providerId ?? appointmentData.ProviderId;
+      if (!v) return 1;
+      const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
+      return isNaN(parsed) ? 1 : parsed;
+    })();
+    const serviceLocationID = (() => {
+      const v = appointmentData.serviceLocationId ?? appointmentData.ServiceLocationId;
+      if (!v || v === 'default-location') return 1;
+      const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
+      if (isNaN(parsed)) return v;
+      return parsed <= 0 ? 1 : parsed;
+    })();
+    const patientID = parseId(appointmentData.patientId ?? appointmentData.PatientId);
+
+    // Required only (4.14.1): PracticeID, ServiceLocationID, AppointmentStatus, StartTime, EndTime, IsRecurring, PatientSummary, AppointmentReasonID, ProviderID, ResourceID, ResourceIDs, AppointmentType, WasCreatedOnline, PatientID. Optional omitted.
     const appointment = {
-      // Required (4.14.1): PracticeID, ServiceLocationID, AppointmentStatus, StartTime, EndTime, IsRecurring, PatientSummary, AppointmentReasonID, ProviderID, ResourceID, ResourceIDs, AppointmentType, WasCreatedOnline, PatientID
-      AppointmentMode: appointmentData.appointmentMode ?? appointmentData.AppointmentMode ?? 'Telehealth',
-      AppointmentName: appointmentData.appointmentName ?? appointmentData.AppointmentName ?? 'Appointment',
-      AppointmentReasonID: null, // set after lookup
+      PracticeID: practiceID,
+      ServiceLocationID: serviceLocationID,
       AppointmentStatus: appointmentData.appointmentStatus ?? appointmentData.AppointmentStatus ?? 'Scheduled',
-      AppointmentType: appointmentData.appointmentType ?? appointmentData.AppointmentType ?? 'P', // P = Patient
-      IsRecurring: appointmentData.isRecurring ?? appointmentData.IsRecurring ?? false,
-      WasCreatedOnline: appointmentData.wasCreatedOnline ?? appointmentData.WasCreatedOnline ?? true,
-      PatientID: parseId(appointmentData.patientId ?? appointmentData.PatientId),
-      AttendeesCount: appointmentData.attendeesCount ?? appointmentData.AttendeesCount ?? 1,
+      StartTime: appointmentData.startTime ?? appointmentData.StartTime,
       EndTime: appointmentData.endTime ?? appointmentData.EndTime,
-      ForRecare: appointmentData.forRecare ?? appointmentData.ForRecare ?? false,
-      InsurancePolicyAuthorizationID: parseId(appointmentData.insurancePolicyAuthorizationId ?? appointmentData.InsurancePolicyAuthorizationId),
-      IsGroupAppointment: appointmentData.isGroupAppointment ?? appointmentData.IsGroupAppointment ?? false,
-      MaxAttendees: appointmentData.maxAttendees ?? appointmentData.MaxAttendees ?? 1,
-      Notes: this.buildAppointmentNotes(appointmentData),
-      PatientCaseID: parseId(appointmentData.patientCaseId ?? appointmentData.PatientCaseId),
-      PracticeID: (() => {
-        const v = appointmentData.practiceId ?? appointmentData.PracticeId ?? '1';
-        const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
-        if (isNaN(parsed)) { console.error(`❌ [TEBRA] Invalid PracticeID: ${v}, using 1`); return 1; }
-        return parsed;
-      })(),
-      ProviderID: (() => {
-        const v = appointmentData.providerId ?? appointmentData.ProviderId;
-        if (!v) return 1;
-        const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
-        return isNaN(parsed) ? 1 : parsed;
-      })(),
+      IsRecurring: appointmentData.isRecurring ?? appointmentData.IsRecurring ?? false,
+      AppointmentReasonID: null, // set after lookup
+      ProviderID: providerID,
       ResourceID: parseId(appointmentData.resourceId ?? appointmentData.ResourceId),
-      ServiceLocationID: (() => {
-        const v = appointmentData.serviceLocationId ?? appointmentData.ServiceLocationId;
-        if (!v || v === 'default-location') return 1;
-        const parsed = typeof v === 'string' ? parseInt(v, 10) : v;
-        if (isNaN(parsed)) return v;
-        return parsed <= 0 ? 1 : parsed;
-      })(),
-      StartTime: appointmentData.startTime ?? appointmentData.StartTime
+      AppointmentType: appointmentData.appointmentType ?? appointmentData.AppointmentType ?? 'P',
+      WasCreatedOnline: appointmentData.wasCreatedOnline ?? appointmentData.WasCreatedOnline ?? true,
+      PatientID: patientID
     };
 
-    // PatientSummary: required by CreateAppointment. Use ...Id to match Tebra schema.
+    // PatientSummary (required): only required sub-fields per 4.14 — PatientID, PracticeID, FirstName, LastName, Email.
     const fromInput = appointmentData.patientSummary || appointmentData.PatientSummary;
-    const ps = {
-      PatientID: appointment.PatientID,
-      PracticeID: appointment.PracticeID,
+    appointment.PatientSummary = {
+      PatientID: patientID,
+      PracticeID: practiceID,
       FirstName: fromInput?.FirstName ?? fromInput?.firstName ?? appointmentData.patientFirstName ?? 'Unknown',
       LastName: fromInput?.LastName ?? fromInput?.lastName ?? appointmentData.patientLastName ?? 'Patient',
       Email: fromInput?.Email ?? fromInput?.email ?? appointmentData.patientEmail ?? 'unknown@example.com'
     };
-    const opt = (a, b, c, d) => { const v = a ?? b ?? c ?? d; if (v != null && v !== '') return v; return undefined; };
-    if (opt(fromInput?.MiddleName, fromInput?.middleName, appointmentData.patientMiddleName) != null) ps.MiddleName = opt(fromInput?.MiddleName, fromInput?.middleName, appointmentData.patientMiddleName);
-    if (opt(fromInput?.DateOfBirth, fromInput?.dateOfBirth, appointmentData.patientDateOfBirth) != null) ps.DateOfBirth = opt(fromInput?.DateOfBirth, fromInput?.dateOfBirth, appointmentData.patientDateOfBirth);
-    if (opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone) != null) ps.HomePhone = opt(fromInput?.HomePhone, fromInput?.homePhone, appointmentData.patientHomePhone);
-    if (opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone) != null) ps.WorkPhone = opt(fromInput?.WorkPhone, fromInput?.workPhone, appointmentData.patientWorkPhone);
-    if (opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone) != null) ps.MobilePhone = opt(fromInput?.MobilePhone, fromInput?.mobilePhone, appointmentData.patientMobilePhone);
-    if (opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId) != null) ps.GenderId = opt(fromInput?.GenderId, fromInput?.genderId, appointmentData.patientGenderId);
-    appointment.PatientSummary = ps;
-
-    // PatientSummaries (group appointments)
-    if (appointmentData.patientSummaries && Array.isArray(appointmentData.patientSummaries)) {
-      appointment.PatientSummaries = appointmentData.patientSummaries.map(patient => ({
-        DateOfBirth: patient.dateOfBirth,
-        Email: patient.email,
-        FirstName: patient.firstName,
-        GenderId: patient.genderId,
-        Guid: patient.guid,
-        HomePhone: patient.homePhone,
-        LastName: patient.lastName,
-        MiddleName: patient.middleName,
-        MobilePhone: patient.mobilePhone,
-        OtherEmail: patient.otherEmail,
-        OtherPhone: patient.otherPhone,
-        PatientID: patient.patientId,
-        PracticeID: patient.practiceId,
-        PreferredEmailType: patient.preferredEmailType,
-        PreferredPhoneType: patient.preferredPhoneType,
-        WorkEmail: patient.workEmail,
-        WorkPhone: patient.workPhone,
-        Status: patient.status
-      }));
-    }
-
-    // RecurrenceRule
-    if (appointmentData.recurrenceRule) {
-      appointment.RecurrenceRule = {
-        AppointmentId: appointmentData.recurrenceRule.appointmentId,
-        DayInterval: appointmentData.recurrenceRule.dayInterval,
-        DayOfMonth: appointmentData.recurrenceRule.dayOfMonth,
-        DayOfWeek: appointmentData.recurrenceRule.dayOfWeek,
-        DayOfWeekFlags: appointmentData.recurrenceRule.dayOfWeekFlags,
-        DayOfWeekMonthlyOrdinal: appointmentData.recurrenceRule.dayOfWeekMonthlyOrdinal,
-        DayOfWeekMonthlyOrdinalFlags: appointmentData.recurrenceRule.dayOfWeekMonthlyOrdinalFlags,
-        EndDate: appointmentData.recurrenceRule.endDate,
-        MonthInterval: appointmentData.recurrenceRule.monthInterval,
-        MonthOfYear: appointmentData.recurrenceRule.monthOfYear,
-        NumOccurrences: appointmentData.recurrenceRule.numOccurrences,
-        NumberOfTimes: appointmentData.recurrenceRule.numberOfTimes,
-        RecurrenceRuleId: appointmentData.recurrenceRule.recurrenceRuleId,
-        StartDate: appointmentData.recurrenceRule.startDate,
-        TypeOfDay: appointmentData.recurrenceRule.typeOfDay,
-        TypeOfDayMonthlyOrdinal: appointmentData.recurrenceRule.typeOfDayMonthlyOrdinal,
-        TypeOfDayMonthlyOrdinalFlags: appointmentData.recurrenceRule.typeOfDayMonthlyOrdinalFlags
-      };
-    }
 
     // Look up AppointmentReasonId
     const reasonNameOrId = appointmentData.appointmentReasonId ?? appointmentData.AppointmentReasonId;
@@ -1408,13 +1316,19 @@ ${appointmentXml}
       appointment.AppointmentReasonID = reasonId;
     }
 
-    // Fallback when AppointmentReasonId is null
+    // Fallback when AppointmentReasonId is null. Order: TEBRA_DEFAULT_APPT_REASON_ID -> TEBRA_DEFAULT_APPT_REASON_GUID -> TEBRA_DEFAULT_APPT_REASON_NAME -> first from API
     if (appointment.AppointmentReasonID == null) {
       const defaultId = process.env.TEBRA_DEFAULT_APPT_REASON_ID;
+      const defaultGuid = (typeof process.env.TEBRA_DEFAULT_APPT_REASON_GUID === 'string' && /^[0-9a-fA-F-]{36}$/.test(process.env.TEBRA_DEFAULT_APPT_REASON_GUID.trim()))
+        ? process.env.TEBRA_DEFAULT_APPT_REASON_GUID.trim() : null;
       const defaultName = process.env.TEBRA_DEFAULT_APPT_REASON_NAME;
       if (defaultId != null && defaultId !== '' && !isNaN(parseInt(String(defaultId), 10))) {
         appointment.AppointmentReasonID = parseInt(String(defaultId), 10);
-      } else if (defaultName != null && typeof defaultName === 'string' && defaultName.trim() !== '') {
+      } else if (defaultGuid) {
+        const reasonId = await this.lookupAppointmentReasonId(defaultGuid, appointment.PracticeID);
+        if (reasonId != null) appointment.AppointmentReasonID = reasonId;
+      }
+      if (appointment.AppointmentReasonID == null && defaultName != null && typeof defaultName === 'string' && defaultName.trim() !== '') {
         const reasonId = await this.lookupAppointmentReasonId(defaultName.trim(), appointment.PracticeID);
         if (reasonId != null) appointment.AppointmentReasonID = reasonId;
       }
@@ -1429,38 +1343,67 @@ ${appointmentXml}
         }
       }
       if (appointment.AppointmentReasonID == null) {
-        console.warn(`⚠️ [TEBRA] AppointmentReasonID is still null. Set TEBRA_DEFAULT_APPT_REASON_ID or TEBRA_DEFAULT_APPT_REASON_NAME.`);
+        console.warn(`⚠️ [TEBRA] AppointmentReasonID is still null. Set TEBRA_DEFAULT_APPT_REASON_ID, TEBRA_DEFAULT_APPT_REASON_GUID, or TEBRA_DEFAULT_APPT_REASON_NAME.`);
       }
     }
 
-    // ResourceId: when absent, use ProviderId. CreateAppointmentV3 requires "valid ProviderGuids or ResourceGuids";
-    // ResourceID=0 / ResourceIds=[0] are invalid and cause "Error translating" or "must have valid ProviderGuids or ResourceGuids".
+    // ResourceID: use env.TEBRA_RESOURCE_ID (with state override); fallback to ProviderID only when TEBRA_RESOURCE_ID not set.
+    // ResourceIds: SOAP 4.14 expects array of integer IDs (arr:long). Use [TEBRA_RESOURCE_ID]; GUIDs go in ResourceGuids/ProviderGuids.
+    const uuid = (s) => (typeof s === 'string' && /^[0-9a-fA-F-]{36}$/.test(String(s).trim()) ? String(s).trim() : null);
     const hasResourceId = (v) => (v != null && v !== '') && (typeof v !== 'number' || !isNaN(v));
+    const state = (appointmentData.state || 'CA').toString().toUpperCase();
+    if (!hasResourceId(appointment.ResourceID)) {
+      const ridEnv = parseId(process.env['TEBRA_RESOURCE_ID_' + state]) || parseId(process.env.TEBRA_RESOURCE_ID);
+      if (ridEnv != null) appointment.ResourceID = ridEnv;
+    }
     if (!hasResourceId(appointment.ResourceID)) {
       const pid = appointment.ProviderID;
       if (pid != null && !isNaN(parseInt(String(pid), 10))) appointment.ResourceID = parseInt(String(pid), 10);
     }
-    const rids = Array.isArray(appointmentData.resourceIds) && appointmentData.resourceIds.length
-      ? appointmentData.resourceIds
-      : (appointment.ResourceID != null ? [appointment.ResourceID] : (appointment.ProviderID != null ? [appointment.ProviderID] : []));
-    appointment.ResourceIds = rids.map((id) => parseId(id)).filter((id) => id != null && id !== '');
-
-    // CreateAppointmentV3 requires ProviderGuids or ResourceGuids (UUIDs). Resolve from input or env.
-    const guidList = (() => {
-      const g = appointmentData.providerGuids;
-      if (Array.isArray(g) && g.length > 0) {
-        return g.filter((x) => typeof x === 'string' && /^[0-9a-fA-F-]{36}$/.test(x));
+    // Always use duplicated ResourceID: [1, 1] as workaround for V3 translator validation
+    if (hasResourceId(appointment.ResourceID)) {
+      const resourceId = parseInt(String(appointment.ResourceID), 10);
+      appointment.ResourceIds = [resourceId, resourceId]; // Duplicate: [1, 1] for ResourceID 1
+    } else if (Array.isArray(appointmentData.resourceIds) && appointmentData.resourceIds.length) {
+      const ids = appointmentData.resourceIds.map((id) => parseId(id)).filter((id) => id != null && id !== '');
+      // If resourceIds provided but ResourceID not set, duplicate the first one
+      if (ids.length > 0) {
+        const firstId = parseInt(String(ids[0]), 10);
+        appointment.ResourceIds = [firstId, firstId]; // Duplicate: [1, 1]
+      } else {
+        appointment.ResourceIds = [];
       }
-      const one = appointmentData.providerGuid;
-      if (typeof one === 'string' && /^[0-9a-fA-F-]{36}$/.test(one)) return [one];
-      const stateKey = (appointmentData.state || '').toUpperCase();
-      const byState = stateKey ? process.env['TEBRA_PROVIDER_GUID_' + stateKey] : undefined;
-      if (typeof byState === 'string' && /^[0-9a-fA-F-]{36}$/.test(byState)) return [byState];
-      const global = process.env.TEBRA_PROVIDER_GUID;
-      if (typeof global === 'string' && /^[0-9a-fA-F-]{36}$/.test(global)) return [global];
-      return [];
-    })();
-    if (guidList.length > 0) appointment.ProviderGuids = guidList;
+    } else {
+      appointment.ResourceIds = [];
+    }
+
+    // CreateAppointmentV3 requires PracticeGuid (practice UUID); getPracticeGuid() is null otherwise. Not in SOAP 4.14.
+    const practiceGuidVal = uuid(appointmentData.practiceGuid) || uuid(process.env['TEBRA_PRACTICE_GUID_' + state]) || uuid(process.env.TEBRA_PRACTICE_GUID);
+    if (practiceGuidVal) appointment.PracticeGuid = practiceGuidVal;
+
+    // ServiceLocationGuid (V3): when set in env or appointmentData, include for translation to CreateAppointmentV3.
+    const slGuid = uuid(appointmentData.serviceLocationGuid) || uuid(process.env['TEBRA_SERVICE_LOCATION_GUID_' + state]) || uuid(process.env.TEBRA_SERVICE_LOCATION_GUID);
+    if (slGuid) appointment.ServiceLocationGuid = slGuid;
+
+    // CreateAppointmentV3 requires ProviderGuids or ResourceGuids (not in 4.14). When provided via appointmentData or env, add them so V3 accepts the request.
+    // Set TEBRA_SKIP_PROVIDER_RESOURCE_GUIDS=true to omit them (e.g. to test if 4.14→V3 translator infers from ProviderID/ResourceID).
+    const skipGuids = process.env.TEBRA_SKIP_PROVIDER_RESOURCE_GUIDS === 'true' || process.env.TEBRA_SKIP_PROVIDER_RESOURCE_GUIDS === '1';
+    if (!skipGuids) {
+      if (Array.isArray(appointmentData.resourceGuids) && appointmentData.resourceGuids.length) {
+        const guids = appointmentData.resourceGuids.map((g) => uuid(g)).filter(Boolean);
+        if (guids.length) appointment.ResourceGuids = guids;
+      } else {
+        const r = uuid(appointmentData.resourceGuid) || uuid(process.env['TEBRA_RESOURCE_GUID_' + state]) || uuid(process.env.TEBRA_RESOURCE_GUID);
+        if (r) appointment.ResourceGuids = [r];
+      }
+      if (Array.isArray(appointmentData.providerGuids) && appointmentData.providerGuids.length) {
+        const guids = appointmentData.providerGuids.map((g) => uuid(g)).filter(Boolean);
+        if (guids.length) appointment.ProviderGuids = guids;
+      } else {
+        const p = uuid(appointmentData.providerGuid) || uuid(process.env['TEBRA_PROVIDER_GUID_' + state]) || uuid(process.env.TEBRA_PROVIDER_GUID);
+        if (p) appointment.ProviderGuids = [p];
+      }
+    }
 
     return appointment;
   }
@@ -1734,15 +1677,18 @@ ${appointmentXml}
 
   async updatePatient(patientId, updates) {
     try {
-      // Build the request structure per Tebra 4.21: RequestHeader (CustomerKey, User, Password only), Practice (required, at request level), Patient.
-      // RequestHeader must NOT include PracticeId (Tebra 2.3). Practice is a sibling to Patient in the request.
+      // Build the request structure per Tebra 4.21: RequestHeader (CustomerKey, User, Password only), Patient (includes Practice).
+      // RequestHeader must NOT include PracticeId (Tebra 2.3). Practice is nested under Patient.
+      const patientPractice = {
+        PracticeID: updates.practice?.id || process.env.TEBRA_PRACTICE_ID,
+        PracticeName: this.practiceName || updates.practice?.name
+      };
+      if (!patientPractice.PracticeID && !patientPractice.PracticeName) {
+        patientPractice.PracticeID = process.env.TEBRA_PRACTICE_ID || '1';
+      }
       const args = {
         UpdatePatientReq: {
           RequestHeader: this.buildRequestHeader(),
-          Practice: {
-            PracticeID: updates.practice?.id || process.env.TEBRA_PRACTICE_ID,
-            PracticeName: this.practiceName || updates.practice?.name
-          },
           Patient: {
             PatientID: patientId,
             FirstName: updates.firstName,
@@ -1846,12 +1792,13 @@ ${appointmentXml}
               ShowWhenPreparingPatientStatements: updates.alert.showWhenPreparingPatientStatements,
               ShowWhenSchedulingAppointments: updates.alert.showWhenSchedulingAppointments,
               ShowWhenViewingClaimDetails: updates.alert.showWhenViewingClaimDetails
-            }
+            },
+            Practice: patientPractice
           }
         }
       };
 
-      // Raw SOAP path: Tebra 4.21.1 – RequestHeader; Practice (one of PracticeID, PracticeName); Patient (PatientID, FirstName, LastName required). On InternalServiceFault, fallback to node-soap.
+      // Raw SOAP path: Tebra 4.21.1 – RequestHeader; Patient (PatientID, FirstName, LastName) with Practice (one of PracticeID, PracticeName). On InternalServiceFault, fallback to node-soap.
       if (this.useRawSOAP) {
         const P = args.UpdatePatientReq.Patient;
         const minimalPatient = {
@@ -1859,13 +1806,14 @@ ${appointmentXml}
           FirstName: (P.FirstName != null && P.FirstName !== '') ? P.FirstName : 'Unknown',
           LastName: (P.LastName != null && P.LastName !== '') ? P.LastName : 'Unknown'
         };
-        const pId = args.UpdatePatientReq.Practice?.PracticeID ?? process.env.TEBRA_PRACTICE_ID;
-        const pName = args.UpdatePatientReq.Practice?.PracticeName ?? this.practiceName;
+        const pId = args.UpdatePatientReq.Patient?.Practice?.PracticeID ?? process.env.TEBRA_PRACTICE_ID;
+        const pName = args.UpdatePatientReq.Patient?.Practice?.PracticeName ?? this.practiceName;
         const practice = {};
         if (pId != null && String(pId).trim() !== '') practice.PracticeID = pId;
         if (pName != null && String(pName).trim() !== '') practice.PracticeName = pName;
         if (Object.keys(practice).length === 0) practice.PracticeID = process.env.TEBRA_PRACTICE_ID || '1';
-        const payload = { Practice: practice, Patient: minimalPatient };
+        minimalPatient.Practice = practice;
+        const payload = { Patient: minimalPatient };
         try {
           const rawXml = await this.callRawSOAPMethod('UpdatePatient', payload, {});
           const faultMatch = String(rawXml).match(/<faultstring[^>]*>([^<]*)<\/faultstring>/i);
@@ -1992,14 +1940,87 @@ ${appointmentXml}
       try {
         const xml = err?.response?.data || err?.data || '';
         if (typeof xml !== 'string') return null;
+        
+        // Extract detailed exception information if IncludeExceptionDetailInFaults is enabled
+        const exceptionDetails = {
+          faultString: null,
+          faultCode: null,
+          faultActor: null,
+          detail: null,
+          innerException: null,
+          stackTrace: null,
+          message: null,
+          type: null,
+          rawXml: xml
+        };
+        
         if (/Fault/i.test(xml)) {
+          // Extract faultstring
           const faultStringMatch = xml.match(/<faultstring[^>]*>([\s\S]*?)<\/faultstring>/i);
+          if (faultStringMatch && faultStringMatch[1]) {
+            exceptionDetails.faultString = faultStringMatch[1].trim();
+          }
+          
+          // Extract faultcode
+          const faultCodeMatch = xml.match(/<faultcode[^>]*>([\s\S]*?)<\/faultcode>/i);
+          if (faultCodeMatch && faultCodeMatch[1]) {
+            exceptionDetails.faultCode = faultCodeMatch[1].trim();
+          }
+          
+          // Extract detail section (where exception details would be if IncludeExceptionDetailInFaults is enabled)
+          const detailMatch = xml.match(/<detail[^>]*>([\s\S]*?)<\/detail>/i);
+          if (detailMatch && detailMatch[1]) {
+            exceptionDetails.detail = detailMatch[1].trim();
+            
+            // Try to extract ExceptionDetail if present
+            const exceptionDetailMatch = detailMatch[1].match(/<ExceptionDetail[^>]*>([\s\S]*?)<\/ExceptionDetail>/i);
+            if (exceptionDetailMatch && exceptionDetailMatch[1]) {
+              const excDetail = exceptionDetailMatch[1];
+              
+              // Extract exception type
+              const typeMatch = excDetail.match(/<ExceptionType[^>]*>([\s\S]*?)<\/ExceptionType>/i);
+              if (typeMatch && typeMatch[1]) exceptionDetails.type = typeMatch[1].trim();
+              
+              // Extract message
+              const messageMatch = excDetail.match(/<Message[^>]*>([\s\S]*?)<\/Message>/i);
+              if (messageMatch && messageMatch[1]) exceptionDetails.message = messageMatch[1].trim();
+              
+              // Extract stack trace
+              const stackMatch = excDetail.match(/<StackTrace[^>]*>([\s\S]*?)<\/StackTrace>/i);
+              if (stackMatch && stackMatch[1]) exceptionDetails.stackTrace = stackMatch[1].trim();
+              
+              // Extract inner exception
+              const innerMatch = excDetail.match(/<InnerException[^>]*>([\s\S]*?)<\/InnerException>/i);
+              if (innerMatch && innerMatch[1]) exceptionDetails.innerException = innerMatch[1].trim();
+            }
+          }
+          
+          // Extract Reason/Text (alternative fault format)
           const reasonMatch = xml.match(/<Reason>[\s\S]*?<Text[^>]*>([\s\S]*?)<\/Text>[\s\S]*?<\/Reason>/i);
-          const msg = (faultStringMatch && faultStringMatch[1]) || (reasonMatch && reasonMatch[1]) || null;
+          if (reasonMatch && reasonMatch[1]) {
+            exceptionDetails.faultString = exceptionDetails.faultString || reasonMatch[1].trim();
+          }
+          
+          // Return the most informative message
+          const msg = exceptionDetails.message || exceptionDetails.faultString || exceptionDetails.detail || 'SOAP Fault';
+          
+          // If we have detailed exception info, attach it to the error
+          if (exceptionDetails.type || exceptionDetails.stackTrace || exceptionDetails.innerException) {
+            err.exceptionDetails = exceptionDetails;
+          }
+          
           return msg ? msg.trim() : 'SOAP Fault';
         }
         // Tebra-specific internal service fault string
-        if (/InternalServiceFault/i.test(xml)) return 'InternalServiceFault';
+        if (/InternalServiceFault/i.test(xml)) {
+          // Try to extract any additional details even for InternalServiceFault
+          const detailMatch = xml.match(/<detail[^>]*>([\s\S]*?)<\/detail>/i);
+          if (detailMatch && detailMatch[1]) {
+            exceptionDetails.detail = detailMatch[1].trim();
+            err.exceptionDetails = exceptionDetails;
+          }
+          return 'InternalServiceFault';
+        }
       } catch (_) {}
       return null;
     };
@@ -2036,29 +2057,57 @@ ${appointmentXml}
       console.log('CreateDocument args:', JSON.stringify(args, null, 2));
       const [result] = await client.CreateDocumentAsync(args);
       console.log('CreateDocument result:', result);
+      
+      // Write raw Tebra response to file for debugging
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const responseFile = path.join(__dirname, '../../scripts/tebra-create-document-raw-response.json');
+        fs.writeFileSync(responseFile, JSON.stringify({
+          timestamp: new Date().toISOString(),
+          rawTebraResponse: result,
+          normalizedResponse: this.normalizeCreateDocumentResponse(result)
+        }, null, 2), 'utf8');
+      } catch (fileErr) {
+        // Non-critical
+      }
+      
       const normalizedResult = this.normalizeCreateDocumentResponse(result);
       
-      // Store document metadata in local database for retrieval
+      // Store document metadata in local database for retrieval (optional - only if database is available)
       // (since Tebra SOAP 2.1 doesn't support GetDocuments/GetDocumentContent)
-      try {
-        await documentService.initialize(); // Ensure table exists
-        await documentService.storeDocument({
-          tebraDocumentId: normalizedResult.id,
-          patientId: documentData.patientId,
-          practiceId: documentData.practiceId,
-          name: documentData.name || 'Document',
-          fileName: documentData.fileName || `document-${Date.now()}.json`,
-          label: documentData.label || 'General',
-          status: documentData.status || 'Completed',
-          documentDate: documentData.documentDate || new Date().toISOString(),
-          documentNotes: documentData.documentNotes || documentData.notes || '',
-          fileContentBase64: documentData.fileContent || '',
-          mimeType: documentData.mimeType || 'application/json'
-        });
-        console.log(`✅ [DOCUMENT] Stored document metadata in local database: ${normalizedResult.id}`);
-      } catch (dbError) {
-        // Non-critical: log but don't fail document creation
-        console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+      // Skip database storage if DATABASE_URL is not set or if we're just testing Tebra API
+      if (process.env.DATABASE_URL && !process.env.TEBRA_SKIP_DB_STORAGE) {
+        try {
+          await documentService.initialize(); // Ensure table exists
+          await documentService.storeDocument({
+            tebraDocumentId: normalizedResult.id,
+            patientId: documentData.patientId,
+            practiceId: documentData.practiceId,
+            name: documentData.name || 'Document',
+            fileName: documentData.fileName || `document-${Date.now()}.json`,
+            label: documentData.label || 'General',
+            status: documentData.status || 'Completed',
+            documentDate: documentData.documentDate || new Date().toISOString(),
+            documentNotes: documentData.documentNotes || documentData.notes || '',
+            fileContentBase64: documentData.fileContent || '',
+            mimeType: documentData.mimeType || 'application/json'
+          });
+          console.log(`✅ [DOCUMENT] Stored document metadata in local database: ${normalizedResult.id}`);
+        } catch (dbError) {
+          // Non-critical: log but don't fail document creation
+          // Silently skip if it's a connection error (database not available for testing)
+          const isConnectionError = dbError.message && (
+            dbError.message.includes('ECONNREFUSED') || 
+            dbError.message.includes('connect') ||
+            dbError.code === 'ECONNREFUSED'
+          );
+          if (!isConnectionError) {
+            console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+          }
+        }
+      } else {
+        console.log('ℹ️  [DOCUMENT] Skipping local database storage (TEBRA_SKIP_DB_STORAGE set or DATABASE_URL not configured)');
       }
       
       return normalizedResult;
@@ -2076,25 +2125,35 @@ ${appointmentXml}
           console.log('CreateDocument retry result:', result2);
           const normalizedResult2 = this.normalizeCreateDocumentResponse(result2);
           
-          // Store document metadata in local database for retrieval
-          try {
-            await documentService.initialize();
-            await documentService.storeDocument({
-              tebraDocumentId: normalizedResult2.id,
-              patientId: documentData.patientId,
-              practiceId: documentData.practiceId,
-              name: documentData.name || 'Document',
-              fileName: documentData.fileName || `document-${Date.now()}.json`,
-              label: documentData.label || 'General',
-              status: documentData.status || 'Completed',
-              documentDate: documentData.documentDate || new Date().toISOString(),
-              documentNotes: documentData.documentNotes || documentData.notes || '',
-              fileContentBase64: documentData.fileContent || '',
-              mimeType: documentData.mimeType || 'application/json'
-            });
-            console.log(`✅ [DOCUMENT] Stored document metadata in local database (retry): ${normalizedResult2.id}`);
-          } catch (dbError) {
-            console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+          // Store document metadata in local database for retrieval (optional - only if database is available)
+          if (process.env.DATABASE_URL && !process.env.TEBRA_SKIP_DB_STORAGE) {
+            try {
+              await documentService.initialize();
+              await documentService.storeDocument({
+                tebraDocumentId: normalizedResult2.id,
+                patientId: documentData.patientId,
+                practiceId: documentData.practiceId,
+                name: documentData.name || 'Document',
+                fileName: documentData.fileName || `document-${Date.now()}.json`,
+                label: documentData.label || 'General',
+                status: documentData.status || 'Completed',
+                documentDate: documentData.documentDate || new Date().toISOString(),
+                documentNotes: documentData.documentNotes || documentData.notes || '',
+                fileContentBase64: documentData.fileContent || '',
+                mimeType: documentData.mimeType || 'application/json'
+              });
+              console.log(`✅ [DOCUMENT] Stored document metadata in local database (retry): ${normalizedResult2.id}`);
+            } catch (dbError) {
+              // Non-critical: silently skip if database not available
+              const isConnectionError = dbError.message && (
+                dbError.message.includes('ECONNREFUSED') || 
+                dbError.message.includes('connect') ||
+                dbError.code === 'ECONNREFUSED'
+              );
+              if (!isConnectionError) {
+                console.warn('⚠️ [DOCUMENT] Failed to store document metadata in database (non-critical):', dbError?.message || dbError);
+              }
+            }
           }
           
           return normalizedResult2;
@@ -2374,55 +2433,47 @@ ${appointmentXml}
           const hint = 'Set TEBRA_DEFAULT_APPT_REASON_ID or TEBRA_DEFAULT_APPT_REASON_NAME (e.g. "Counseling"). Run: node scripts/list-tebra-appointment-reasons.js <practiceId> to list IDs.';
           throw new Error(`AppointmentReasonID is required by Tebra but could not be resolved. ${hint}`);
         }
-        // Log the appointment data being sent (especially DateTime fields)
+        // Log the appointment data being sent (required 4.14 fields)
         console.log('🔍 [TEBRA] Appointment data being sent:', JSON.stringify({
+          PracticeID: appointment.PracticeID,
+          ServiceLocationID: appointment.ServiceLocationID,
           StartTime: appointment.StartTime,
           EndTime: appointment.EndTime,
           PatientID: appointment.PatientID,
-          PracticeID: appointment.PracticeID,
-          AppointmentType: appointment.AppointmentType,
-          AppointmentMode: appointment.AppointmentMode,
-          AppointmentReasonID: appointment.AppointmentReasonID
+          AppointmentReasonID: appointment.AppointmentReasonID,
+          ProviderID: appointment.ProviderID,
+          ResourceID: appointment.ResourceID,
+          ResourceIds: appointment.ResourceIds
         }, null, 2));
         
         let rawXml, parsed, appointmentId;
-        let payload = appointment;
-        let attempt = 0;
         const errTranslate = 'Error translating AppointmentCreate to CreateAppointmentV3Request';
+        const baseSummary = appointment.PatientSummary;
+        const payloadVariants = [
+          { label: 'base', data: { ...appointment } },
+          { label: 'no-practice-guid', data: { ...appointment, PracticeGuid: undefined } },
+          { label: 'no-service-location-guid', data: { ...appointment, ServiceLocationGuid: undefined } },
+          { label: 'no-practice-service-guids', data: { ...appointment, PracticeGuid: undefined, ServiceLocationGuid: undefined } },
+          { label: 'provider-guids-only', data: { ...appointment, ResourceGuids: undefined } },
+          { label: 'resource-guids-only', data: { ...appointment, ProviderGuids: undefined } },
+          { label: 'guids-only-no-ids', data: { ...appointment, ProviderID: undefined, ResourceID: undefined, ResourceIds: undefined } },
+          { label: 'ids-only-no-guids', data: { ...appointment, ProviderGuids: undefined, ResourceGuids: undefined } },
+          { label: 'no-top-level-patient-id', data: { ...appointment, PatientID: undefined } },
+          { label: 'patient-summaries-only', data: { ...appointment, PatientSummary: undefined, PatientSummaries: baseSummary ? [baseSummary] : undefined } },
+          { label: 'guids-only-no-ids-no-top-patient-id', data: { ...appointment, ProviderID: undefined, ResourceID: undefined, ResourceIds: undefined, PatientID: undefined } }
+        ];
+        let lastPayload = appointment;
 
-        while (attempt < 5) {
-          attempt++;
-          if (attempt === 2) {
-            payload = { ...appointment };
-            delete payload.ResourceID;
-            delete payload.ResourceIds;
-            delete payload.Notes;
-            console.log('🔄 [TEBRA] Retry ' + attempt + ': without ResourceID, ResourceIds, Notes');
-          } else if (attempt === 3) {
-            payload = { ...appointment };
-            delete payload.ResourceID;
-            delete payload.ResourceIds;
-            delete payload.Notes;
-            delete payload.ForRecare;
-            delete payload.IsGroupAppointment;
-            delete payload.MaxAttendees;
-            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal (no ResourceID, ResourceIds, Notes, ForRecare, IsGroupAppointment, MaxAttendees)');
-          } else if (attempt === 4) {
-            payload = { ...appointment };
-            payload.AppointmentReasonID = 0;
-            console.log('🔄 [TEBRA] Retry ' + attempt + ': full payload with AppointmentReasonID=0 (V3; existing appts use 0)');
-          } else if (attempt === 5) {
-            payload = { ...appointment };
-            delete payload.ResourceID;
-            delete payload.ResourceIds;
-            delete payload.Notes;
-            delete payload.ForRecare;
-            delete payload.IsGroupAppointment;
-            delete payload.MaxAttendees;
-            delete payload.PatientID;
-            payload.AppointmentReasonID = 0;
-            console.log('🔄 [TEBRA] Retry ' + attempt + ': minimal + AppointmentReasonID=0, omit PatientID (PatientSummary only)');
+        for (const variant of payloadVariants) {
+          const payload = variant.data;
+          lastPayload = payload;
+          if (!payload.AppointmentReasonID || payload.AppointmentReasonID === 0) {
+            const defaultId = process.env.TEBRA_DEFAULT_APPT_REASON_ID;
+            if (defaultId && defaultId !== '0' && !isNaN(parseInt(String(defaultId), 10))) {
+              payload.AppointmentReasonID = parseInt(String(defaultId), 10);
+            }
           }
+          console.log(`🔄 [TEBRA] CreateAppointment attempt: ${variant.label}`);
 
           rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
           const xmlPreview = typeof rawXml === 'string' && rawXml.length > 500 ? rawXml.substring(0, 500) + '...' : rawXml;
@@ -2448,13 +2499,23 @@ ${appointmentXml}
               appointmentId = idMatch[1].trim();
               console.log(`✅ [TEBRA] Extracted AppointmentID from raw XML using regex: ${appointmentId}`);
             }
-            const errorMatch = rawXml.match(/<ErrorMessage[^>]*>([^<]*)<\/ErrorMessage>/i);
+            const errorMatch = rawXml.match(/<ErrorMessage[^>]*>([\s\S]*?)<\/ErrorMessage>/i);
             const errorMsg = errorMatch && errorMatch[1] ? errorMatch[1].trim() : null;
             if (errorMsg) console.error(`❌ [TEBRA] Error message in CreateAppointment response: ${errorMsg}`);
             if (errorMsg && errorMsg.toLowerCase() !== 'success') {
-              if (errorMsg === errTranslate && attempt < 5) continue;
-              if (errorMsg === errTranslate && attempt === 5) break;
-              throw new Error(`Tebra CreateAppointment failed: ${errorMsg}`);
+              if (errorMsg === errTranslate) {
+                continue;
+              }
+              let h = '';
+              if (/ProviderGuids or ResourceGuids/i.test(errorMsg)) {
+                h = ' CreateAppointmentV3 requires valid TEBRA_PROVIDER_GUID and/or TEBRA_RESOURCE_GUID. Obtain from Tebra Support and set in .env. See docs/TEBRA_CREATE_APPOINTMENT_V3_FINDINGS.md.';
+                console.warn('[TEBRA] Hint:', h);
+              } else if (/not authorized for Practice/i.test(errorMsg)) {
+                h = ' Use an authorized practice: GetPractices({}).then(console.log), then set TEBRA_PRACTICE_ID and TEBRA_PRACTICE_ID_CA to that ID.';
+                console.warn('[TEBRA] Hint:', h);
+              }
+              const short = errorMsg.length > 280 ? errorMsg.slice(0, 280) + '…' : errorMsg;
+              throw new Error(`Tebra CreateAppointment failed: ${short}${h}`);
             }
             const isErrorMatch = rawXml.match(/<IsError[^>]*>([^<]+)<\/IsError>/i);
             if (isErrorMatch && isErrorMatch[1] && isErrorMatch[1].toLowerCase() === 'true') {
@@ -2472,11 +2533,11 @@ ${appointmentXml}
           }
         }
 
-        // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails 3x (WSDL-shaped XML may satisfy CreateAppointmentV3)
+        // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails all variants (WSDL-shaped XML may satisfy CreateAppointmentV3)
         try {
           console.log('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP retries exhausted)');
           const client = await this.getClient();
-          const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: payload || appointment } };
+          const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: lastPayload || appointment } };
           this.cleanRequestData(args);
           const [result] = await client.CreateAppointmentAsync(args);
           return this.normalizeCreateAppointmentResponse(result);
@@ -2488,11 +2549,15 @@ ${appointmentXml}
         const msg = (lastErr && lastErr[1]) || 'No AppointmentID in response';
         let hint = '';
         if (/ProviderGuids or ResourceGuids/i.test(msg)) {
-          hint = ' CreateAppointmentV3 requires ProviderGuids or ResourceGuids (UUIDs). SOAP 2.1 only sends ProviderID/ResourceID; Tebra does not map them. Contact Tebra for Provider/Resource GUIDs or to enable ID→GUID mapping.';
-        } else if (/CreateAppointmentV3Request/i.test(msg)) {
-          hint = ' Set TEBRA_DEFAULT_APPT_REASON_ID from: node scripts/list-tebra-appointment-reasons.js ' + (appointment.PracticeID || '1');
+          hint = ' CreateAppointmentV3 requires valid TEBRA_PROVIDER_GUID and/or TEBRA_RESOURCE_GUID. SOAP Get* APIs do not return them — obtain from Tebra Support/Customer Care and set in .env. See docs/TEBRA_CREATE_APPOINTMENT_V3_FINDINGS.md.';
+        } else if (/not authorized for Practice/i.test(msg)) {
+          hint = ' Use a practice your user is authorized for: run GetPractices (or node -e "require(\'./src/services/tebraService\').getPractices({}).then(console.log)"), then set TEBRA_PRACTICE_ID and TEBRA_PRACTICE_ID_CA to that practice\'s ID.';
+        } else if (/CreateAppointmentV3Request|Error translating/i.test(msg)) {
+          hint = ' Set TEBRA_DEFAULT_APPT_REASON_ID from: node scripts/list-tebra-appointment-reasons.js ' + (appointment.PracticeID || '1') + '. If "not authorized for Practice", switch to an authorized practice (GetPractices). If "ProviderGuids or ResourceGuids", obtain TEBRA_PROVIDER_GUID/TEBRA_RESOURCE_GUID from Tebra.';
         }
-        throw new Error(`Tebra CreateAppointment failed: ${msg}${hint}`);
+        if (hint) console.warn('[TEBRA] Hint:', hint);
+        const shortMsg = msg.length > 320 ? msg.slice(0, 320) + '…' : msg;
+        throw new Error(`Tebra CreateAppointment failed: ${shortMsg}${hint}`);
       }
 
       const client = await this.getClient();
@@ -2862,111 +2927,48 @@ ${appointmentXml}
 
   // Helper methods to get Practice and Provider information
   async getPractices(options = {}) {
-    let args = null; // Declare outside try block for error logging
     try {
+      console.log(`🔍 [TEBRA] Getting practices with options:`, options);
+      
       // Validate credentials before making request
       if (!this.customerKey || !this.user || !this.password) {
         throw new Error('Tebra credentials missing. Please set TEBRA_CUSTOMER_KEY, TEBRA_USER, and TEBRA_PASSWORD in environment variables.');
       }
       
-      // Use raw SOAP if enabled (may work better with Tebra v2)
-      if (this.useRawSOAP) {
-        // Build fields and filters for raw SOAP
-        const fields = {
-          ID: 1,
-          PracticeName: 1,
-          Active: 1
-        };
-        
-        const filters = {};
-        if (options.id) filters.ID = options.id;
-        if (options.practiceName) filters.PracticeName = options.practiceName;
-        if (options.active !== undefined) filters.Active = options.active;
-        if (options.npi) filters.NPI = options.npi;
-        if (options.taxId) filters.TaxID = options.taxId;
-        if (options.fromCreatedDate) filters.FromCreatedDate = options.fromCreatedDate;
-        if (options.toCreatedDate) filters.ToCreatedDate = options.toCreatedDate;
-        if (options.fromLastModifiedDate) filters.FromLastModifiedDate = options.fromLastModifiedDate;
-        if (options.toLastModifiedDate) filters.ToLastModifiedDate = options.toLastModifiedDate;
-        
-        const rawXml = await this.callRawSOAPMethod('GetPractices', fields, filters);
-        const parsed = this.parseRawSOAPResponse(rawXml, 'GetPractices');
-        return this.normalizeGetPracticesResponse(parsed);
-      }
-      
-      const client = await this.getClient();
-      
-      // Build the request structure according to the SOAP API
-      // Start with minimal fields to avoid InternalServiceFault
-      args = {
-        request: {
-          RequestHeader: this.buildRequestHeader(),
-          Fields: {
-            // Basic practice information (minimal set to avoid errors)
-            ID: 1,
-            PracticeName: 1,
-            Active: 1
-            // Note: Additional fields can be added if needed, but starting minimal to avoid InternalServiceFault
-            // (comma removed intentionally - this is the last field)
-            // Uncomment below fields if basic request succeeds:
-            /*
-            CreatedDate: 1,
-            LastModifiedDate: 1,
-            // Practice address
-            PracticeAddressLine1: 1,
-            PracticeAddressLine2: 1,
-            PracticeCity: 1,
-            PracticeState: 1,
-            PracticeZipCode: 1,
-            PracticeCountry: 1,
-            // Contact information
-            Phone: 1,
-            Email: 1,
-            // Business information
-            NPI: 1,
-            TaxID: 1
-            */
-          },
-          Filter: {
-            // Basic filters
-            ID: options.id,
-            PracticeName: options.practiceName,
-            Active: options.active,
-            NPI: options.npi,
-            TaxID: options.taxId,
-            // Date filters
-            FromCreatedDate: options.fromCreatedDate,
-            ToCreatedDate: options.toCreatedDate,
-            FromLastModifiedDate: options.fromLastModifiedDate,
-            ToLastModifiedDate: options.toLastModifiedDate
-          }
-        }
+      // Use raw SOAP implementation (this was working before)
+      const fields = {
+        ID: 1,
+        PracticeName: 1,
+        Active: 1,
+        AddressLine1: 1,
+        City: 1,
+        State: 1,
+        Phone: 1,
+        NPI: 1,
+        TaxID: 1
       };
-
-      // Remove undefined/null values to avoid sending '?' placeholders
-      this.cleanRequestData(args);
       
-      console.log("GetPractices args:", JSON.stringify(args, null, 2));
-      const [result] = await client.GetPracticesAsync(args);
-      console.log("GetPractices result:", result);
-      return this.normalizeGetPracticesResponse(result);
+      const filters = {};
+      if (options.id) filters.ID = options.id;
+      if (options.practiceName) filters.PracticeName = options.practiceName;
+      if (options.active !== undefined) filters.Active = options.active;
+      if (options.npi) filters.NPI = options.npi;
+      if (options.taxId) filters.TaxID = options.taxId;
+      if (options.fromCreatedDate) filters.FromCreatedDate = options.fromCreatedDate;
+      if (options.toCreatedDate) filters.ToCreatedDate = options.toCreatedDate;
+      if (options.fromLastModifiedDate) filters.FromLastModifiedDate = options.fromLastModifiedDate;
+      if (options.toLastModifiedDate) filters.ToLastModifiedDate = options.toLastModifiedDate;
+      
+      const rawXml = await this.callRawSOAPMethod('GetPractices', fields, filters);
+      const parsed = this.parseRawSOAPResponse(rawXml, 'GetPractices');
+      return this.normalizeGetPracticesResponse(parsed);
+      
     } catch (error) {
-      // Parse SOAP fault if available
-      let faultMsg = null;
-      try {
-        const xml = error?.response?.data || error?.data || '';
-        if (typeof xml === 'string' && /Fault/i.test(xml)) {
-          const faultStringMatch = xml.match(/<faultstring[^>]*>([\s\S]*?)<\/faultstring>/i);
-          faultMsg = faultStringMatch && faultStringMatch[1] ? faultStringMatch[1].trim() : null;
-          if (/InternalServiceFault/i.test(xml)) faultMsg = 'InternalServiceFault';
-        }
-      } catch (_) {}
-      
-      console.error('Tebra SOAP: GetPractices error', error.message, faultMsg ? `| Fault: ${faultMsg}` : '');
+      console.error('Tebra SOAP: GetPractices error', error.message);
       console.error('GetPractices error details:', {
         message: error.message,
-        fault: faultMsg,
-        args: args ? JSON.stringify(args, null, 2) : 'Not initialized (error occurred before args creation)',
+        fault: error.fault || null,
+        args: 'Raw SOAP implementation',
         credentials: {
           hasCustomerKey: !!this.customerKey,
           hasUser: !!this.user,
@@ -2974,74 +2976,38 @@ ${appointmentXml}
           customerKeyLength: this.customerKey ? this.customerKey.length : 0
         }
       });
-      
-      // If InternalServiceFault, log concise diagnostic info
-      if (faultMsg && /InternalServiceFault/i.test(faultMsg)) {
-        console.error('⚠️ [TEBRA] GetPractices InternalServiceFault');
-        console.error('  This is a Tebra server-side error. Most likely causes:');
-        console.error('  1. Invalid credentials or SOAP API access not enabled');
-        console.error('  2. Account permissions issue');
-        console.error('  3. Tebra server-side configuration problem');
-        console.error('  Note: Raw SOAP is enabled and working. This error is from the fallback soap library path.');
-        console.error('  If you see this error, ensure TEBRA_USE_RAW_SOAP=true in your .env file.');
-      }
-      
-      const e = new Error(faultMsg || error?.message || 'GetPractices failed');
-      e.status = error?.status || 502;
-      e.code = faultMsg ? 'TEBRA_GET_PRACTICES_FAULT' : 'TEBRA_GET_PRACTICES_ERROR';
-      e.details = error?.response?.data || undefined;
-      throw e;
+      throw error;
     }
   }
 
   async getProviders(options = {}) {
     try {
-      // Use raw SOAP if enabled, otherwise use soap library
-      if (this.useRawSOAP) {
-        // Request minimal fields to avoid InternalServiceFault
-        const fields = {
-          ID: 1,
-          FirstName: 1,
-          LastName: 1,
-          Active: 1
-        };
-        
-        const filters = {};
-        if (options.practiceId) filters.PracticeId = options.practiceId;
-        if (options.id) filters.ID = options.id;
-        if (options.active !== undefined) filters.Active = options.active;
-        
-        const result = await this.callRawSOAPMethod('GetProviders', fields, filters);
-        const parsed = this.parseRawSOAPResponse(result, 'GetProviders');
-        return this.normalizeGetProvidersResponse(parsed);
+      console.log(`🔍 [TEBRA] Getting providers with options:`, options);
+      
+      // Use raw SOAP implementation (this was working before)
+      const fields = {
+        ID: 1,
+        FirstName: 1,
+        LastName: 1,
+        Active: 1,
+        GUID: 1
+      };
+      
+      const filters = {};
+      if (options.practiceId) filters.PracticeId = options.practiceId;
+      if (options.practiceName) filters.PracticeName = options.practiceName;
+      if (options.id) filters.ID = options.id;
+      if (options.active !== undefined) filters.Active = options.active;
+      
+      // Tebra requires PracticeName in filter - use from options or environment
+      if (Object.keys(filters).length === 0 && this.practiceName) {
+        filters.PracticeName = this.practiceName;
       }
 
-      const client = await this.getClient();
+      const result = await this.callRawSOAPMethod('GetProviders', fields, filters);
+      const parsed = this.parseRawSOAPResponse(result, 'GetProviders');
+      return this.normalizeGetProvidersResponse(parsed);
       
-      // Build the request structure according to the SOAP API
-      // Start with minimal fields to avoid internal server errors
-      const args = {
-        request: {
-          RequestHeader: this.buildRequestHeader(),
-          Fields: {
-            // Minimal fields to avoid InternalServiceFault
-            ID: 1,
-            FirstName: 1,
-            LastName: 1,
-            Active: 1
-          },
-          Filter: {
-            PracticeId: options.practiceId
-          }
-        }
-      };
-
-      this.cleanRequestData(args);
-      
-      console.log("GetProviders args:", JSON.stringify(args, null, 2));
-      const [result] = await client.GetProvidersAsync(args);
-      console.log("GetProviders result:", result);
-      return this.normalizeGetProvidersResponse(result);
     } catch (error) {
       this.handleSOAPError(error, 'GetProviders', { options });
     }
@@ -3099,1148 +3065,6 @@ ${appointmentXml}
         message: 'Failed to calculate availability. GetAvailability is not available in Tebra SOAP 2.1 API.'
       };
     }
-  }
-
-  // Normalizers
-  normalizeCreatePatientResponse(result) {
-    // Accept both plain object or nested response
-    const data = this.unwrap(result);
-    const id = data.PatientID || data.id || data.patientId;
-    return { id };
-  }
-
-  normalizeGetPatientResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Patients && Array.isArray(data.Patients) && data.Patients.length > 0) {
-      return this.normalizePatientData(data.Patients[0]);
-    } else if (Array.isArray(data) && data.length > 0) {
-      return this.normalizePatientData(data[0]);
-    } else {
-      // Single patient response
-      return this.normalizePatientData(data);
-    }
-  }
-
-  normalizeGetPatientsResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Patients && Array.isArray(data.Patients)) {
-    return {
-        patients: data.Patients.map(patient => this.normalizePatientData(patient)),
-        totalCount: data.TotalCount || data.Patients.length,
-        hasMore: data.HasMore || false,
-        nextStartKey: data.NextStartKey || null
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        patients: data.map(patient => this.normalizePatientData(patient)),
-        totalCount: data.length,
-        hasMore: false,
-        nextStartKey: null
-      };
-    } else {
-      // Single patient response
-      return {
-        patients: [this.normalizePatientData(data)],
-        totalCount: 1,
-        hasMore: false,
-        nextStartKey: null
-      };
-    }
-  }
-
-  normalizePatientData(patient) {
-    return {
-      id: patient.ID || patient.PatientID || patient.id,
-      first_name: patient.FirstName || patient.first_name,
-      last_name: patient.LastName || patient.last_name,
-      full_name: patient.PatientFullName || patient.full_name,
-      email: patient.EmailAddress || patient.email,
-      home_phone: patient.HomePhone || patient.home_phone,
-      mobile_phone: patient.MobilePhone || patient.mobile_phone,
-      work_phone: patient.WorkPhone || patient.work_phone,
-      date_of_birth: patient.DOB || patient.DateOfBirth || patient.date_of_birth,
-      gender: patient.Gender || patient.gender,
-      ssn: patient.SSN || patient.ssn,
-      medical_record_number: patient.MedicalRecordNumber || patient.medical_record_number,
-      address: {
-        street: patient.AddressLine1 || patient.address?.street,
-        city: patient.City || patient.address?.city,
-        state: patient.State || patient.address?.state,
-        zip_code: patient.ZipCode || patient.address?.zip_code,
-        country: patient.Country || patient.address?.country
-      },
-      emergency_contact: {
-        name: patient.EmergencyName || patient.emergency_contact?.name,
-        phone: patient.EmergencyPhone || patient.emergency_contact?.phone
-      },
-      insurance: {
-        primary: {
-          company_name: patient.PrimaryInsurancePolicyCompanyName,
-          policy_number: patient.PrimaryInsurancePolicyNumber,
-          plan_name: patient.PrimaryInsurancePolicyPlanName
-        },
-        secondary: {
-          company_name: patient.SecondaryInsurancePolicyCompanyName,
-          policy_number: patient.SecondaryInsurancePolicyNumber,
-          plan_name: patient.SecondaryInsurancePolicyPlanName
-        }
-      },
-      providers: {
-        default_rendering: patient.DefaultRenderingProviderFullName,
-        primary_care: patient.PrimaryCarePhysicianFullName,
-        referring: patient.ReferringProviderFullName
-      },
-      service_location: {
-        name: patient.DefaultServiceLocationName,
-        id: patient.DefaultServiceLocationId
-      },
-      practice: {
-        id: patient.PracticeId,
-        name: patient.PracticeName
-      },
-      recent_activity: {
-        last_appointment: patient.LastAppointmentDate,
-        last_encounter: patient.LastEncounterDate,
-        last_diagnosis: patient.LastDiagnosis
-      },
-      notes: {
-        statement_note: patient.StatementNote,
-        most_recent: {
-          message: patient.MostRecentNote1Message,
-          date: patient.MostRecentNote1Date,
-          user: patient.MostRecentNote1User
-        }
-      },
-      created_at: patient.CreatedDate || patient.created_at,
-      updated_at: patient.LastModifiedDate || patient.updated_at
-    };
-  }
-
-  /**
-   * Sanitize phone for UpdatePatient: omit placeholders and values with too few digits.
-   * Returns undefined so cleanRequestData will omit the field. Reduces InternalServiceFault
-   * when frontend sends "not provided", "n/a", etc.
-   */
-  _sanitizePhoneForUpdate(val) {
-    if (val == null || typeof val !== 'string') return undefined;
-    const s = String(val).trim();
-    if (!s) return undefined;
-    const lowered = s.toLowerCase();
-    if (['not provided', 'n/a', 'none', '-', 'na', 'n.a.', 'n.a'].includes(lowered)) return undefined;
-    const digits = s.replace(/\D/g, '');
-    if (digits.length < 10) return undefined;
-    return s;
-  }
-
-  cleanRequestData(obj) {
-    if (obj === null || obj === undefined) return;
-    
-    if (Array.isArray(obj)) {
-      for (let i = obj.length - 1; i >= 0; i--) {
-        if (obj[i] === null || obj[i] === undefined || obj[i] === '') {
-          obj.splice(i, 1);
-        } else {
-          this.cleanRequestData(obj[i]);
-        }
-      }
-    } else if (typeof obj === 'object') {
-      for (const key in obj) {
-        if (obj[key] === null || obj[key] === undefined || obj[key] === '') {
-          delete obj[key];
-        } else {
-          this.cleanRequestData(obj[key]);
-        }
-      }
-    }
-  }
-
-  normalizeCreateDocumentResponse(result) {
-    const data = this.unwrap(result);
-    return {
-      id: data.DocumentID || data.id || data.documentId,
-      name: data.Name || data.name,
-      fileName: data.FileName || data.fileName,
-      documentDate: data.DocumentDate || data.documentDate,
-      status: data.Status || data.status,
-      patientId: data.PatientId || data.patientId,
-      practiceId: data.PracticeId || data.practiceId,
-      created_at: data.CreatedDate || data.created_at
-    };
-  }
-
-  normalizeGetAppointmentsResponse(result, requestingPatientId = null) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Appointments && Array.isArray(data.Appointments)) {
-      return {
-        appointments: data.Appointments.map(appointment => this.normalizeAppointmentData(appointment, requestingPatientId)),
-        totalCount: data.TotalCount || data.Appointments.length,
-        hasMore: data.HasMore || false,
-        nextStartKey: data.NextStartKey || null
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        appointments: data.map(appointment => this.normalizeAppointmentData(appointment, requestingPatientId)),
-        totalCount: data.length,
-        hasMore: false,
-        nextStartKey: null
-      };
-    } else {
-      // Single appointment response
-      return {
-        appointments: [this.normalizeAppointmentData(data, requestingPatientId)],
-        totalCount: 1,
-        hasMore: false,
-        nextStartKey: null
-      };
-    }
-  }
-
-  normalizeGetAppointmentResponse(result, requestingPatientId = null) {
-    const data = this.unwrap(result);
-    
-    // Debug: Log the unwrapped data to understand the structure
-    console.log('🔍 [DEBUG] Unwrapped GetAppointment result:', JSON.stringify(data, null, 2));
-    
-    // Handle different response structures
-    if (data.Appointments && Array.isArray(data.Appointments) && data.Appointments.length > 0) {
-      console.log('🔍 [DEBUG] Found Appointments array, using first appointment');
-      return this.normalizeAppointmentData(data.Appointments[0], requestingPatientId);
-    } else if (data.Appointment) {
-      console.log('🔍 [DEBUG] Found single Appointment object');
-      return this.normalizeAppointmentData(data.Appointment, requestingPatientId);
-    } else if (Array.isArray(data) && data.length > 0) {
-      console.log('🔍 [DEBUG] Found data array, using first item');
-      return this.normalizeAppointmentData(data[0], requestingPatientId);
-    } else if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-      console.log('🔍 [DEBUG] Using data directly as appointment');
-      // Single appointment response
-      return this.normalizeAppointmentData(data, requestingPatientId);
-    } else {
-      console.log('🔍 [DEBUG] No valid appointment data found, returning empty appointment');
-      // Return empty appointment structure if no data found
-      return this.normalizeAppointmentData({}, requestingPatientId);
-    }
-  }
-
-  normalizeCreateAppointmentResponse(result) {
-    const data = this.unwrap(result);
-    return {
-      id: data.AppointmentID || data.id || data.appointmentId,
-      appointmentId: data.AppointmentID || data.appointmentId,
-      startTime: data.StartTime || data.startTime,
-      endTime: data.EndTime || data.endTime,
-      status: data.AppointmentStatus || data.status,
-      patientId: data.PatientId || data.patientId,
-      practiceId: data.PracticeId || data.practiceId,
-      created_at: data.CreatedDate || data.created_at
-    };
-  }
-
-  normalizeAppointmentData(appointment, requestingPatientId = null) {
-    // Handle null/undefined appointment
-    if (!appointment || typeof appointment !== 'object') {
-      return {};
-    }
-    
-    // Debug: Log the raw appointment data to understand the structure
-    console.log('🔍 [DEBUG] Raw appointment data:', JSON.stringify(appointment, null, 2));
-    
-    // Handle date and time fields from GetAppointment API
-    // GetAppointment returns StartTime and EndTime in UTC format (e.g., 2020-01-24T22:00:00.000Z)
-    const startDateTimeRaw = appointment.StartTime || appointment.startTime;
-    const endDateTimeRaw = appointment.EndTime || appointment.endTime;
-    
-    // Extract date and time components from UTC datetime strings
-    let startDate = null;
-    let startTimeFormatted = null;
-    let endDate = null;
-    let endTimeFormatted = null;
-    
-    if (startDateTimeRaw) {
-      try {
-        const startDateTime = new Date(startDateTimeRaw);
-        startDate = startDateTime.toISOString().split('T')[0]; // YYYY-MM-DD
-        startTimeFormatted = startDateTime.toTimeString().split(' ')[0]; // HH:MM:SS
-      } catch (error) {
-        console.warn('Failed to parse start time:', startDateTimeRaw);
-        startTimeFormatted = startDateTimeRaw;
-      }
-    }
-    
-    if (endDateTimeRaw) {
-      try {
-        const endDateTime = new Date(endDateTimeRaw);
-        endDate = endDateTime.toISOString().split('T')[0]; // YYYY-MM-DD
-        endTimeFormatted = endDateTime.toTimeString().split(' ')[0]; // HH:MM:SS
-      } catch (error) {
-        console.warn('Failed to parse end time:', endDateTimeRaw);
-        endTimeFormatted = endDateTimeRaw;
-      }
-    }
-    
-    return {
-      id: appointment.ID || appointment.AppointmentID || appointment.id || appointment.AppointmentId,
-      appointmentId: appointment.ID || appointment.AppointmentID || appointment.appointmentId || appointment.AppointmentId,
-      // Extract patientId to top level for filter compatibility
-      patientId: appointment.PatientID || appointment.PatientId || appointment.patientId,
-      // Preserve raw UTC datetimes from GetAppointment (best source for full date+time)
-      startDateTime: startDateTimeRaw || null,
-      endDateTime: endDateTimeRaw || null,
-      startDate: startDate,
-      endDate: endDate,
-      startTime: startTimeFormatted,
-      endTime: endTimeFormatted,
-      appointmentDuration: appointment.AppointmentDuration || appointment.appointmentDuration,
-      allDay: appointment.AllDay || appointment.allDay,
-      type: appointment.Type || appointment.type,
-      appointmentType: appointment.AppointmentType || appointment.appointmentType,
-      appointmentStatus: appointment.AppointmentStatus || appointment.appointmentStatus,
-      confirmationStatus: appointment.ConfirmationStatus || appointment.confirmationStatus,
-      notes: appointment.Notes || appointment.Note || appointment.notes || appointment.note,
-      recurring: appointment.Recurring || appointment.recurring,
-      isRecurring: appointment.IsRecurring || appointment.isRecurring,
-      occurrenceId: appointment.OccurrenceID || appointment.occurrenceId,
-      appointmentReasonId: appointment.AppointmentReasonID || appointment.appointmentReasonId,
-      providerId: appointment.ProviderID || appointment.providerId,
-      resourceId: appointment.ResourceID || appointment.resourceId,
-      resourceIds: appointment.ResourceIDs || appointment.resourceIds,
-      appointmentName: appointment.AppointmentName || appointment.appointmentName,
-      wasCreatedOnline: appointment.WasCreatedOnline || appointment.wasCreatedOnline,
-      insurancePolicyAuthorizationId: appointment.InsurancePolicyAuthorizationID || appointment.insurancePolicyAuthorizationId,
-      isGroupAppointment: appointment.IsGroupAppointment || appointment.isGroupAppointment,
-      maxAttendees: appointment.MaxAttendees || appointment.maxAttendees,
-      attendeesCount: appointment.AttendeesCount || appointment.attendeesCount,
-      forRecare: appointment.ForRecare || appointment.forRecare,
-      createdDate: appointment.CreatedDate || appointment.createdDate,
-      lastModifiedDate: appointment.LastModifiedDate || appointment.lastModifiedDate,
-      // Patient information - comprehensive data from GetAppointment API
-      patient: {
-        id: appointment.PatientID || appointment.PatientId || appointment.patientId,
-        // Prefer API-provided full name; otherwise synthesize from available Patient/PatientSummary fields
-        fullName: (
-          appointment.PatientFullName ||
-          appointment.patientFullName ||
-          `${(appointment.FirstName || appointment.firstName || (appointment.PatientSummary && (appointment.PatientSummary.FirstName || appointment.PatientSummary.firstName)) || (appointment.patientSummary && (appointment.patientSummary.FirstName || appointment.patientSummary.firstName)) || '').toString()} ${(appointment.LastName || appointment.lastName || (appointment.PatientSummary && (appointment.PatientSummary.LastName || appointment.PatientSummary.lastName)) || (appointment.patientSummary && (appointment.patientSummary.LastName || appointment.patientSummary.lastName)) || '').toString()}`.trim()
-        ),
-        firstName: appointment.FirstName || appointment.firstName || (appointment.PatientSummary && (appointment.PatientSummary.FirstName || appointment.PatientSummary.firstName)) || (appointment.patientSummary && (appointment.patientSummary.FirstName || appointment.patientSummary.firstName)),
-        middleName: appointment.MiddleName || appointment.middleName,
-        lastName: appointment.LastName || appointment.lastName || (appointment.PatientSummary && (appointment.PatientSummary.LastName || appointment.PatientSummary.lastName)) || (appointment.patientSummary && (appointment.patientSummary.LastName || appointment.patientSummary.lastName)),
-        email: appointment.Email || appointment.email || (appointment.PatientSummary && (appointment.PatientSummary.Email || appointment.PatientSummary.email)) || (appointment.patientSummary && (appointment.patientSummary.Email || appointment.patientSummary.email)),
-        homePhone: appointment.HomePhone || appointment.homePhone || (appointment.PatientSummary && (appointment.PatientSummary.HomePhone || appointment.PatientSummary.homePhone)) || (appointment.patientSummary && (appointment.patientSummary.HomePhone || appointment.patientSummary.homePhone)),
-        workPhone: appointment.WorkPhone || appointment.workPhone,
-        mobilePhone: appointment.MobilePhone || appointment.mobilePhone || (appointment.PatientSummary && (appointment.PatientSummary.MobilePhone || appointment.PatientSummary.mobilePhone)) || (appointment.patientSummary && (appointment.patientSummary.MobilePhone || appointment.patientSummary.mobilePhone)),
-        workEmail: appointment.WorkEmail || appointment.workEmail,
-        otherEmail: appointment.OtherEmail || appointment.otherEmail,
-        dateOfBirth: appointment.DateOfBirth || appointment.dateOfBirth || (appointment.PatientSummary && (appointment.PatientSummary.DateOfBirth || appointment.PatientSummary.dateOfBirth)) || (appointment.patientSummary && (appointment.patientSummary.DateOfBirth || appointment.patientSummary.dateOfBirth)),
-        genderId: appointment.GenderID || appointment.genderId,
-        preferredPhoneType: appointment.PreferredPhoneType || appointment.preferredPhoneType,
-        preferredEmailType: appointment.PreferredEmailType || appointment.preferredEmailType,
-        guid: appointment.Guid || appointment.guid,
-        caseId: appointment.PatientCaseID || appointment.patientCaseId,
-        caseName: appointment.PatientCaseName || appointment.patientCaseName,
-        casePayerScenario: appointment.PatientCasePayerScenario || appointment.patientCasePayerScenario
-      },
-      // Meeting link (explicit field only; do not parse Notes for URLs)
-      meetingLink: (() => {
-        try {
-          return appointment.meetingLink || appointment.MeetingLink || null;
-        } catch (e) { return null; }
-      })(),
-      // Practice information
-      practice: {
-        id: appointment.PracticeID || appointment.PracticeId || appointment.practiceId,
-        name: appointment.PracticeName || appointment.practiceName
-      },
-      // Service location
-      serviceLocation: {
-        id: appointment.ServiceLocationID || appointment.ServiceLocationId || appointment.serviceLocationId,
-        name: appointment.ServiceLocationName || appointment.serviceLocationName
-      },
-      // Authorization information
-      authorization: {
-        id: appointment.AuthorizationID || appointment.authorizationId,
-        number: appointment.AuthorizationNumber || appointment.authorizationNumber,
-        startDate: appointment.AuthorizationStartDate || appointment.authorizationStartDate,
-        endDate: appointment.AuthorizationEndDate || appointment.authorizationEndDate,
-        insurancePlan: appointment.AuthorizationInsurancePlan || appointment.authorizationInsurancePlan
-      },
-      // Appointment reasons
-      reasons: this.buildAppointmentReasons(appointment),
-      // Resources
-      resources: this.buildAppointmentResources(appointment),
-      // Patient summaries
-      patientSummaries: this.buildPatientSummaries(appointment),
-      // Mine field - check if appointment belongs to requesting patient
-      mine: requestingPatientId ? (appointment.PatientID || appointment.PatientId || appointment.patientId) === requestingPatientId : false
-    };
-  }
-
-  buildAppointmentReasons(appointment) {
-    const reasons = [];
-    for (let i = 1; i <= 10; i++) {
-      const reason = appointment[`AppointmentReason${i}`] || appointment[`appointmentReason${i}`];
-      const reasonId = appointment[`AppointmentReasonID${i}`] || appointment[`appointmentReasonId${i}`];
-      if (reason || reasonId) {
-        reasons.push({
-          reason: reason,
-          reasonId: reasonId
-        });
-      }
-    }
-    return reasons;
-  }
-
-  buildAppointmentResources(appointment) {
-    const resources = [];
-    for (let i = 1; i <= 10; i++) {
-      const resourceId = appointment[`ResourceID${i}`] || appointment[`resourceId${i}`];
-      const resourceName = appointment[`ResourceName${i}`] || appointment[`resourceName${i}`];
-      const resourceTypeId = appointment[`ResourceTypeID${i}`] || appointment[`resourceTypeId${i}`];
-      if (resourceId || resourceName || resourceTypeId) {
-        resources.push({
-          id: resourceId,
-          name: resourceName,
-          typeId: resourceTypeId
-        });
-      }
-    }
-    return resources;
-  }
-
-  buildPatientSummaries(appointment) {
-    // Handle PatientSummaries field if it exists
-    if (appointment.PatientSummaries && Array.isArray(appointment.PatientSummaries)) {
-      return appointment.PatientSummaries.map(summary => ({
-        patientId: summary.PatientId || summary.patientId,
-        firstName: summary.FirstName || summary.firstName,
-        lastName: summary.LastName || summary.lastName,
-        email: summary.Email || summary.email,
-        dateOfBirth: summary.DateOfBirth || summary.dateOfBirth,
-        genderId: summary.GenderId || summary.genderId,
-        homePhone: summary.HomePhone || summary.homePhone,
-        mobilePhone: summary.MobilePhone || summary.mobilePhone,
-        workPhone: summary.WorkPhone || summary.workPhone,
-        workEmail: summary.WorkEmail || summary.workEmail,
-        otherEmail: summary.OtherEmail || summary.otherEmail,
-        practiceId: summary.PracticeId || summary.practiceId,
-        guid: summary.Guid || summary.guid,
-        status: summary.Status || summary.status
-      }));
-    }
-    
-    // If no PatientSummaries, return empty array
-    return [];
-  }
-
-  // Add mine field to appointment based on requesting patient ID
-  addMineFieldToAppointment(appointment, requestingPatientId) {
-    if (!appointment || !requestingPatientId) {
-      return appointment;
-    }
-
-    // Check if the appointment belongs to the requesting patient
-    const appointmentPatientId = appointment.PatientID || appointment.PatientId || appointment.patientId;
-    const isMine = appointmentPatientId && appointmentPatientId.toString() === requestingPatientId.toString();
-
-    return {
-      ...appointment,
-      mine: isMine
-    };
-  }
-
-  // Check if appointment belongs to requesting patient
-  isAppointmentMine(appointment, requestingPatientId) {
-    if (!appointment || !requestingPatientId) {
-      return false;
-    }
-
-    // Check if the appointment belongs to the requesting patient
-    const appointmentPatientId = appointment.PatientID || appointment.PatientId || appointment.patientId;
-    return appointmentPatientId && appointmentPatientId.toString() === requestingPatientId.toString();
-  }
-
-  normalizeCreateAppointmentReasonResponse(result) {
-    const data = this.unwrap(result);
-    return {
-      id: data.AppointmentReasonID || data.id || data.appointmentReasonId,
-      appointmentReasonId: data.AppointmentReasonID || data.appointmentReasonId,
-      name: data.Name || data.name,
-      practiceId: data.PracticeId || data.practiceId,
-      defaultColorCode: data.DefaultColorCode || data.defaultColorCode,
-      defaultDurationMinutes: data.DefaultDurationMinutes || data.defaultDurationMinutes,
-      practiceResourceIds: data.PracticeReasourceIds || data.practiceResourceIds,
-      procedureCodeIds: data.ProcedureCodeIds || data.procedureCodeIds,
-      providerIds: data.ProviderIds || data.providerIds,
-      created_at: data.CreatedDate || data.created_at
-    };
-  }
-
-  normalizeGetAppointmentReasonsResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.AppointmentReasons && Array.isArray(data.AppointmentReasons)) {
-      return {
-        appointmentReasons: data.AppointmentReasons.map(reason => this.normalizeAppointmentReasonData(reason)),
-        totalCount: data.TotalCount || data.AppointmentReasons.length
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        appointmentReasons: data.map(reason => this.normalizeAppointmentReasonData(reason)),
-        totalCount: data.length
-      };
-    } else {
-      // Single appointment reason response
-      return {
-        appointmentReasons: [this.normalizeAppointmentReasonData(data)],
-        totalCount: 1
-      };
-    }
-  }
-
-  normalizeAppointmentReasonData(reason) {
-    return {
-      id: reason.ID || reason.AppointmentReasonID || reason.AppointmentReasonId || reason.Id || reason.id,
-      appointmentReasonId: reason.ID || reason.AppointmentReasonID || reason.AppointmentReasonId || reason.Id || reason.appointmentReasonId,
-      appointmentReasonGuid: reason.AppointmentReasonGuid || reason.appointmentReasonGuid,
-      name: reason.Name || reason.name,
-      practiceId: reason.PracticeId || reason.practiceId,
-      defaultColorCode: reason.DefaultColorCode || reason.defaultColorCode,
-      defaultDurationMinutes: reason.DefaultDurationMinutes || reason.defaultDurationMinutes,
-      practiceResourceIds: reason.PracticeReasourceIds || reason.practiceResourceIds || [],
-      procedureCodeIds: reason.ProcedureCodeIds || reason.procedureCodeIds || [],
-      providerIds: reason.ProviderIds || reason.providerIds || [],
-      createdDate: reason.CreatedDate || reason.createdDate,
-      lastModifiedDate: reason.LastModifiedDate || reason.lastModifiedDate
-    };
-  }
-
-  normalizeGetAvailabilityResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Availability && Array.isArray(data.Availability)) {
-      return {
-        availability: data.Availability.map(slot => this.normalizeAvailabilityData(slot)),
-        totalCount: data.TotalCount || data.Availability.length
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        availability: data.map(slot => this.normalizeAvailabilityData(slot)),
-        totalCount: data.length
-      };
-    } else {
-      // Single availability response
-      return {
-        availability: [this.normalizeAvailabilityData(data)],
-        totalCount: 1
-      };
-    }
-  }
-
-  normalizeAvailabilityData(availability) {
-    return {
-      id: availability.ID || availability.id,
-      startDate: availability.StartDate || availability.startDate,
-      endDate: availability.EndDate || availability.endDate,
-      startTime: availability.StartTime || availability.startTime,
-      endTime: availability.EndTime || availability.endTime,
-      duration: availability.Duration || availability.duration,
-      isAvailable: availability.IsAvailable || availability.isAvailable,
-      provider: {
-        id: availability.ProviderID || availability.providerId || '1',
-        name: availability.ProviderName || availability.providerName
-      },
-      serviceLocation: {
-        id: availability.ServiceLocationID || availability.serviceLocationId,
-        name: availability.ServiceLocationName || availability.serviceLocationName
-      },
-      practice: {
-        id: availability.PracticeID || availability.practiceId,
-        name: availability.PracticeName || availability.practiceName
-      },
-      appointmentType: availability.AppointmentType || availability.appointmentType,
-      appointmentReason: availability.AppointmentReason || availability.appointmentReason
-    };
-  }
-
-  normalizeGetPracticesResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Practices && Array.isArray(data.Practices)) {
-      return {
-        practices: data.Practices.map(practice => this.normalizePracticeData(practice)),
-        totalCount: data.TotalCount || data.Practices.length
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        practices: data.map(practice => this.normalizePracticeData(practice)),
-        totalCount: data.length
-      };
-    } else {
-      // Single practice response
-      return {
-        practices: [this.normalizePracticeData(data)],
-        totalCount: 1
-      };
-    }
-  }
-
-  normalizeGetProvidersResponse(result) {
-    const data = this.unwrap(result);
-    
-    // Handle different response structures
-    if (data.Providers && Array.isArray(data.Providers)) {
-      return {
-        providers: data.Providers.map(provider => this.normalizeProviderData(provider)),
-        totalCount: data.TotalCount || data.Providers.length
-      };
-    } else if (Array.isArray(data)) {
-      return {
-        providers: data.map(provider => this.normalizeProviderData(provider)),
-        totalCount: data.length
-      };
-    } else {
-      // Single provider response
-      return {
-        providers: [this.normalizeProviderData(data)],
-        totalCount: 1
-      };
-    }
-  }
-
-  normalizePracticeData(practice) {
-    return {
-      id: practice.ID || practice.id,
-      practiceId: practice.ID || practice.id,
-      name: practice.PracticeName || practice.name,
-      active: practice.Active || practice.active,
-      address: {
-        line1: practice.PracticeAddressLine1 || practice.addressLine1,
-        line2: practice.PracticeAddressLine2 || practice.addressLine2,
-        city: practice.PracticeCity || practice.city,
-        state: practice.PracticeState || practice.state,
-        zipCode: practice.PracticeZipCode || practice.zipCode,
-        country: practice.PracticeCountry || practice.country
-      },
-      phone: practice.Phone || practice.phone,
-      phoneExt: practice.PhoneExt || practice.phoneExt,
-      fax: practice.Fax || practice.fax,
-      faxExt: practice.FaxExt || practice.faxExt,
-      email: practice.Email || practice.email,
-      website: practice.WebSite || practice.website,
-      npi: practice.NPI || practice.npi,
-      taxId: practice.TaxID || practice.taxId,
-      subscriptionEdition: practice.SubscriptionEdition || practice.subscriptionEdition,
-      notes: practice.Notes || practice.notes,
-      administrator: {
-        fullName: practice.AdministratorFullName || practice.administratorFullName,
-        email: practice.AdministratorEmail || practice.administratorEmail,
-        phone: practice.AdministratorPhone || practice.administratorPhone,
-        address: {
-          line1: practice.AdministratorAddressLine1 || practice.administratorAddressLine1,
-          city: practice.AdministratorCity || practice.administratorCity,
-          state: practice.AdministratorState || practice.administratorState,
-          zipCode: practice.AdministratorZipCode || practice.administratorZipCode
-        }
-      },
-      billingContact: {
-        fullName: practice.BillingContactFullName || practice.billingContactFullName,
-        email: practice.BillingContactEmail || practice.billingContactEmail,
-        phone: practice.BillingContactPhone || practice.billingContactPhone,
-        address: {
-          line1: practice.BillingContactAddressLine1 || practice.billingContactAddressLine1,
-          city: practice.BillingContactCity || practice.billingContactCity,
-          state: practice.BillingContactState || practice.billingContactState,
-          zipCode: practice.BillingContactZipCode || practice.billingContactZipCode
-        }
-      },
-      createdDate: practice.CreatedDate || practice.createdDate,
-      lastModifiedDate: practice.LastModifiedDate || practice.lastModifiedDate
-    };
-  }
-
-  normalizeProviderData(provider) {
-    return {
-      id: provider.ID || provider.id,
-      providerId: provider.ID || provider.id || '1',
-      guid: provider.Guid || provider.guid || provider.ProviderGuid,
-      firstName: provider.FirstName || provider.firstName,
-      lastName: provider.LastName || provider.lastName,
-      middleName: provider.MiddleName || provider.middleName,
-      fullName: provider.FullName || provider.fullName || `${provider.FirstName || provider.firstName} ${provider.LastName || provider.lastName}`,
-      prefix: provider.Prefix || provider.prefix,
-      suffix: provider.Suffix || provider.suffix,
-      active: provider.Active || provider.active,
-      degree: provider.Degree || provider.degree,
-      specialty: provider.SpecialtyName || provider.specialty,
-      type: provider.Type || provider.type,
-      npi: provider.NationalProviderIdentifier || provider.npi,
-      ssn: provider.SocialSecurityNumber || provider.ssn,
-      billingType: provider.BillingType || provider.billingType,
-      email: provider.EmailAddress || provider.email,
-      workPhone: provider.WorkPhone || provider.workPhone,
-      workPhoneExt: provider.WorkPhoneExt || provider.workPhoneExt,
-      homePhone: provider.HomePhone || provider.homePhone,
-      homePhoneExt: provider.HomePhoneExt || provider.homePhoneExt,
-      mobilePhone: provider.MobilePhone || provider.mobilePhone,
-      mobilePhoneExt: provider.MobilePhoneExt || provider.mobilePhoneExt,
-      fax: provider.Fax || provider.fax,
-      faxExt: provider.FaxExt || provider.faxExt,
-      pager: provider.Pager || provider.pager,
-      pagerExt: provider.PagerExt || provider.pagerExt,
-      address: {
-        line1: provider.AddressLine1 || provider.addressLine1,
-        line2: provider.AddressLine2 || provider.addressLine2,
-        city: provider.City || provider.city,
-        state: provider.State || provider.state,
-        zipCode: provider.ZipCode || provider.zipCode,
-        country: provider.Country || provider.country
-      },
-      practiceId: provider.PracticeID || provider.practiceId,
-      practiceName: provider.PracticeName || provider.practiceName,
-      departmentName: provider.DepartmentName || provider.departmentName,
-      notes: provider.Notes || provider.notes,
-      encounterFormName: provider.EncounterFormName || provider.encounterFormName,
-      // Additional fields for discovery script compatibility
-      isActive: provider.Active || provider.active || provider.IsActive || provider.isActive,
-      title: provider.Title || provider.title,
-      phone: provider.WorkPhone || provider.workPhone || provider.Phone || provider.phone,
-      performanceReport: {
-        active: provider.ProviderPerformanceReportActive || provider.performanceReportActive,
-        ccEmailRecipients: provider.ProviderPerformanceReportCCEmailRecipients || provider.performanceReportCCEmailRecipients,
-        delay: provider.ProviderPerformanceReportDelay || provider.performanceReportDelay,
-        frequency: provider.ProviderPerformanceReportFequency || provider.performanceReportFrequency,
-        scope: provider.ProviderPerformanceReportScope || provider.performanceReportScope
-      },
-      createdDate: provider.CreatedDate || provider.createdDate,
-      lastModifiedDate: provider.LastModifiedDate || provider.lastModifiedDate
-    };
-  }
-
-  // Parse raw SOAP XML response
-  parseRawSOAPResponse(xmlResponse, methodName) {
-    try {
-      // Extract the result from the XML response using a more robust approach
-      const resultMatch = xmlResponse.match(new RegExp(`<${methodName}Result[^>]*>(.*?)</${methodName}Result>`, 's'));
-      if (resultMatch) {
-        const resultXml = resultMatch[1];
-        
-        // Special handling for CreatePatient and CreateAppointment responses
-        if (methodName === 'CreatePatient') {
-          const patient = {};
-          
-          // Extract patient fields from CreatePatient response
-          const fieldMatches = resultXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-          if (fieldMatches) {
-            for (const fieldMatch of fieldMatches) {
-              const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-              if (fieldNameMatch) {
-                const fieldName = fieldNameMatch[1];
-                const fieldValue = fieldNameMatch[2];
-                patient[fieldName] = fieldValue;
-              }
-            }
-          }
-          
-          return {
-            [`${methodName}Result`]: {
-              Patient: patient,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        if (methodName === 'CreateAppointment') {
-          const appointment = {};
-          
-          // Extract appointment fields from CreateAppointment response
-          const fieldMatches = resultXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-          if (fieldMatches) {
-            for (const fieldMatch of fieldMatches) {
-              const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-              if (fieldNameMatch) {
-                const fieldName = fieldNameMatch[1];
-                const fieldValue = fieldNameMatch[2];
-                appointment[fieldName] = fieldValue;
-              }
-            }
-          }
-          
-          return {
-            [`${methodName}Result`]: {
-              Appointment: appointment,
-              rawXml: resultXml
-            }
-          };
-        }
-
-        // Handle DeleteAppointment response
-        if (methodName === 'DeleteAppointment') {
-          const successMatch = resultXml.match(/<Success>([^<]+)<\/Success>/i);
-          const success = successMatch ? successMatch[1].toLowerCase() === 'true' : false;
-
-          // Try to extract an AppointmentId element if present in the result XML
-          const idMatch = resultXml.match(/<AppointmentId>([^<]+)<\/AppointmentId>/i) || resultXml.match(/<AppointmentID>([^<]+)<\/AppointmentID>/i) || [];
-          const appointmentId = idMatch[1] || null;
-
-          return {
-            [`${methodName}Result`]: {
-              Success: success,
-              AppointmentId: appointmentId,
-              rawXml: resultXml
-            }
-          };
-        }
-
-        // Handle UpdateAppointment response
-        if (methodName === 'UpdateAppointment') {
-          const appointment = {};
-          const fieldMatches = resultXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-          if (fieldMatches) {
-            for (const fieldMatch of fieldMatches) {
-              const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-              if (fieldNameMatch) {
-                const fieldName = fieldNameMatch[1];
-                const fieldValue = fieldNameMatch[2];
-                appointment[fieldName] = fieldValue;
-              }
-            }
-          }
-
-          return {
-            [`${methodName}Result`]: {
-              Appointment: appointment,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetPractices response
-        if (methodName === 'GetPractices') {
-          const practices = [];
-          const practiceMatches = resultXml.match(/<PracticeData[^>]*>(.*?)<\/PracticeData>/gs);
-          
-          if (practiceMatches) {
-            for (const practiceXml of practiceMatches) {
-              const practice = {};
-              
-              // Extract practice fields
-              const fieldMatches = practiceXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-              if (fieldMatches) {
-                for (const fieldMatch of fieldMatches) {
-                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-                  if (fieldNameMatch) {
-                    const fieldName = fieldNameMatch[1];
-                    const fieldValue = fieldNameMatch[2];
-                    practice[fieldName] = fieldValue;
-                  }
-                }
-              }
-              
-              if (Object.keys(practice).length > 0) {
-                practices.push(practice);
-              }
-            }
-          }
-          
-          // Return structure that matches what the normalizers expect
-          return {
-            [`${methodName}Result`]: {
-              Practices: practices,
-              TotalCount: practices.length,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetAppointmentReasons response
-        if (methodName === 'GetAppointmentReasons') {
-          const reasons = [];
-          // Match with or without namespace prefix: <AppointmentReasonData>, <a:AppointmentReasonData>, <AppointmentReason>, etc.
-          const blockRegex = /<(?:[a-zA-Z0-9_]+:)?(AppointmentReasonData|AppointmentReason)[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9_]+:)?\1>/gi;
-          let blockMatch;
-          const blocks = [];
-          while ((blockMatch = blockRegex.exec(resultXml)) !== null) {
-            blocks.push(blockMatch[2]);
-          }
-          if (blocks.length === 0) {
-            let m;
-            const re1 = /<AppointmentReasonData[^>]*>([\s\S]*?)<\/AppointmentReasonData>/gi;
-            while ((m = re1.exec(resultXml)) !== null) { if (m[1]) blocks.push(m[1]); }
-            if (blocks.length === 0) {
-              const re2 = /<AppointmentReason[^>]*>([\s\S]*?)<\/AppointmentReason>/gi;
-              while ((m = re2.exec(resultXml)) !== null) { if (m[1]) blocks.push(m[1]); }
-            }
-          }
-          for (const reasonXml of blocks) {
-            const reason = {};
-            const fieldMatches = reasonXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-            if (fieldMatches) {
-              for (const fieldMatch of fieldMatches) {
-                const m = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-                if (m) {
-                  const key = m[1].includes(':') ? m[1].split(':').pop() : m[1];
-                  reason[key] = m[2];
-                }
-              }
-            }
-            // Fallback: explicitly find ID-like elements (Tebra 4.3.2: AppointmentReasonID; also AppointmentReasonId)
-            if (reason.ID == null && reason.AppointmentReasonID == null && reason.AppointmentReasonId == null && reason.Id == null) {
-              const idRegex = /<(?:[^:>]+:)?(AppointmentReasonID|AppointmentReasonId|ID|Id)>([^<]+)</gi;
-              let idM;
-              while ((idM = idRegex.exec(reasonXml)) !== null) {
-                const v = idM[2]?.trim();
-                if (v && !/^\s*$/.test(v)) {
-                  reason[idM[1]] = v;
-                  break;
-                }
-              }
-            }
-            if (Object.keys(reason).length > 0) reasons.push(reason);
-          }
-          const totalMatch = resultXml.match(/<TotalCount>([^<]+)<\/TotalCount>/i);
-          const totalCount = totalMatch ? parseInt(totalMatch[1], 10) : reasons.length;
-          return {
-            [`${methodName}Result`]: {
-              AppointmentReasons: reasons,
-              TotalCount: totalCount,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetProviders response
-        if (methodName === 'GetProviders') {
-          const providers = [];
-          const providerMatches = resultXml.match(/<ProviderData[^>]*>(.*?)<\/ProviderData>/gs);
-          
-          if (providerMatches) {
-            for (const providerXml of providerMatches) {
-              const provider = {};
-              
-              // Extract provider fields
-              const fieldMatches = providerXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-              if (fieldMatches) {
-                for (const fieldMatch of fieldMatches) {
-                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-                  if (fieldNameMatch) {
-                    const fieldName = fieldNameMatch[1];
-                    const fieldValue = fieldNameMatch[2];
-                    provider[fieldName] = fieldValue;
-                  }
-                }
-              }
-              
-              if (Object.keys(provider).length > 0) {
-                providers.push(provider);
-              }
-            }
-          }
-          
-          // Return structure that matches what the normalizers expect
-          return {
-            [`${methodName}Result`]: {
-              Providers: providers,
-              TotalCount: providers.length,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetPatients response
-        if (methodName === 'GetPatients') {
-          const patients = [];
-          const patientMatches = resultXml.match(/<PatientData[^>]*>(.*?)<\/PatientData>/gs);
-          
-          if (patientMatches) {
-            for (const patientXml of patientMatches) {
-              const patient = {};
-              
-              // Extract patient fields
-              const fieldMatches = patientXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-              if (fieldMatches) {
-                for (const fieldMatch of fieldMatches) {
-                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-                  if (fieldNameMatch) {
-                    const fieldName = fieldNameMatch[1];
-                    const fieldValue = fieldNameMatch[2];
-                    patient[fieldName] = fieldValue;
-                  }
-                }
-              }
-              
-              if (Object.keys(patient).length > 0) {
-                patients.push(patient);
-              }
-            }
-          }
-          
-          // Return structure that matches what the normalizers expect
-          return {
-            [`${methodName}Result`]: {
-              Patients: patients,
-              TotalCount: patients.length,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetAppointments response
-        if (methodName === 'GetAppointments') {
-          const appointments = [];
-          const appointmentMatches = resultXml.match(/<AppointmentData>(.*?)<\/AppointmentData>/gs);
-          
-          if (appointmentMatches) {
-            for (const appointmentXml of appointmentMatches) {
-              const appointment = {};
-              
-              // Extract appointment fields
-              const fieldMatches = appointmentXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-              if (fieldMatches) {
-                for (const fieldMatch of fieldMatches) {
-                  const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-                  if (fieldNameMatch) {
-                    const fieldName = fieldNameMatch[1];
-                    const fieldValue = fieldNameMatch[2];
-                    appointment[fieldName] = fieldValue;
-                  }
-                }
-              }
-              
-              if (Object.keys(appointment).length > 0) {
-                appointments.push(appointment);
-              }
-            }
-          }
-          
-          // Return structure that matches what the normalizers expect
-          return {
-            [`${methodName}Result`]: {
-              Appointments: appointments,
-              TotalCount: appointments.length,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Handle GetAppointment response
-        if (methodName === 'GetAppointment') {
-          const appointment = {};
-          
-          // Extract appointment fields from GetAppointment response
-          const fieldMatches = resultXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-          if (fieldMatches) {
-            for (const fieldMatch of fieldMatches) {
-              const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-              if (fieldNameMatch) {
-                const fieldName = fieldNameMatch[1];
-                const fieldValue = fieldNameMatch[2];
-                appointment[fieldName] = fieldValue;
-              }
-            }
-          }
-          
-          return {
-            [`${methodName}Result`]: {
-              Appointment: appointment,
-              rawXml: resultXml
-            }
-          };
-        }
-        
-        // Default handling for other methods
-        return {
-          [`${methodName}Result`]: {
-            rawXml: resultXml
-          }
-        };
-      }
-      
-      // If no result found, return empty structure
-      console.warn(`⚠️ [TEBRA] No result found in XML response for ${methodName}`);
-      return {
-        [`${methodName}Result`]: {
-          Patients: methodName === 'GetPatients' ? [] : undefined,
-          Appointments: methodName === 'GetAppointments' ? [] : undefined,
-          Appointment: methodName === 'GetAppointment' ? {} : undefined,
-          TotalCount: 0
-        }
-      };
-    } catch (error) {
-      console.error(`❌ Error parsing raw SOAP response for ${methodName}:`, error.message);
-      return { rawResponse: xmlResponse, parseError: error.message };
-    }
-  }
-
-  // Legacy method for backward compatibility - parse patients from XML
-  parsePatientsFromXML(resultXml) {
-    const patients = [];
-    const patientMatches = resultXml.match(/<Patient[^>]*>(.*?)<\/Patient>/gs);
-    
-    if (patientMatches) {
-      for (const patientXml of patientMatches) {
-        const patient = {};
-        
-        // Extract common patient fields
-        const fieldMatches = patientXml.match(/<([^>]+)>([^<]*)<\/\1>/g);
-        if (fieldMatches) {
-          for (const fieldMatch of fieldMatches) {
-            const fieldNameMatch = fieldMatch.match(/<([^>]+)>([^<]*)<\/\1>/);
-            if (fieldNameMatch) {
-              const fieldName = fieldNameMatch[1];
-              const fieldValue = fieldNameMatch[2];
-              patient[fieldName] = fieldValue;
-            }
-          }
-        }
-        
-        if (Object.keys(patient).length > 0) {
-          patients.push(patient);
-        }
-      }
-    }
-    
-    return patients;
-  }
-
-  // Generate SOAP envelope for debugging (matches working client)
-  generateSOAPEnvelope(methodName, args = {}) {
-    const authHeader = this.buildRequestHeader();
-    const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:sch="http://www.kareo.com/api/schemas/">
-   <soapenv:Header/>
-   <soapenv:Body>
-      <sch:${methodName}>
-         <sch:request>
-            <sch:RequestHeader>
-               <sch:CustomerKey>${authHeader.CustomerKey}</sch:CustomerKey>
-               <sch:Password>${authHeader.Password}</sch:Password>
-               <sch:User>${authHeader.User}</sch:User>
-            </sch:RequestHeader>
-            ${Object.keys(args).map(key => {
-              if (typeof args[key] === 'object' && args[key] !== null) {
-                return `<sch:${key}>
-               ${Object.keys(args[key]).map(subKey => 
-                 `<sch:${subKey}>${args[key][subKey]}</sch:${subKey}>`
-               ).join('\n               ')}
-            </sch:${key}>`;
-              }
-              return `<sch:${key}>${args[key]}</sch:${key}>`;
-            }).join('\n            ')}
-         </sch:request>
-      </sch:${methodName}>
-   </soapenv:Body>
-</soapenv:Envelope>`;
-    
-    return soapEnvelope;
   }
 
   // Generate SOAP XML based on working template (legacy method)
@@ -4734,11 +3558,13 @@ ${paymentXml}        </sch:Payment>
     try {
       const filters = {
         PracticeName: options.practiceName || this.practiceName,
-        PracticeID: String(options.practiceId || process.env.TEBRA_PRACTICE_ID || ''),
+        PracticeId: String(options.practiceId || process.env.TEBRA_PRACTICE_ID || ''),
         ...(options.id && { ID: String(options.id) })
       };
 
-      return await this.callRawSOAPMethod('GetServiceLocations', {}, filters);
+      // GetServiceLocations requires non-empty Fields to avoid DeserializationFailed
+      const fields = { ID: 1, Name: 1 };
+      return await this.callRawSOAPMethod('GetServiceLocations', fields, filters);
     } catch (error) {
       this.handleSOAPError(error, 'GetServiceLocations', { options });
     }
@@ -4749,7 +3575,7 @@ ${paymentXml}        </sch:Payment>
   // ============================================
 
   /**
-   * Get Procedure Code
+   * Get Procedure Codes
    * Reference: Official API Guide Section 4.10
    */
   async getProcedureCode(options = {}) {
@@ -4759,10 +3585,16 @@ ${paymentXml}        </sch:Payment>
         ...(options.procedureCode && { ProcedureCode: options.procedureCode }),
         ...(options.active !== undefined && { Active: options.active })
       };
-
-      return await this.callRawSOAPMethod('GetProcedureCode', {}, filters);
+      const fields = {
+        ProcedureCode: 1,
+        OfficialName: 1,
+        OfficialDescription: 1,
+        ID: 1,
+        Active: 1
+      };
+      return await this.callRawSOAPMethod('GetProcedureCodes', fields, filters);
     } catch (error) {
-      this.handleSOAPError(error, 'GetProcedureCode', { options });
+      this.handleSOAPError(error, 'GetProcedureCodes', { options });
     }
   }
 
@@ -4854,6 +3686,8 @@ ${paymentXml}        </sch:Payment>
   }
 }
 
+Object.assign(TebraService.prototype, tebraNormalizers, tebraSoapParsing);
+
 // Export both the class and an instance for flexibility
 const tebraServiceInstance = new TebraService();
 
@@ -4866,7 +3700,20 @@ tebraServiceInstance.getDocuments = async function({ patientId, label, name }) {
   
   try {
     const documentService = require('./tebraDocumentService');
-    await documentService.initialize(); // Ensure table exists
+    try {
+      await documentService.initialize(); // Ensure table exists
+    } catch (initError) {
+      // If initialization fails due to connection error, that's okay - we'll return empty list
+      const isConnectionError = initError.message && (
+        initError.message.includes('ECONNREFUSED') || 
+        initError.message.includes('connect') ||
+        initError.code === 'ECONNREFUSED'
+      );
+      if (isConnectionError) {
+        return { documents: [] };
+      }
+      throw initError;
+    }
     
     const documents = await documentService.getDocumentsForPatient({ patientId, label, name });
     
@@ -4891,7 +3738,19 @@ tebraServiceInstance.getDocuments = async function({ patientId, label, name }) {
     
     return { documents: transformed };
   } catch (error) {
-    console.error('❌ [TEBRA] Error getting documents from local database:', error.message);
+    // Check if it's a database connection error
+    const isConnectionError = error.message && (
+      error.message.includes('ECONNREFUSED') || 
+      error.message.includes('connect') ||
+      error.code === 'ECONNREFUSED'
+    );
+    
+    if (isConnectionError) {
+      // Don't log connection errors as errors - they're expected if DB is not running
+      // The calling code can handle this gracefully
+    } else {
+      console.error('❌ [TEBRA] Error getting documents from local database:', error.message);
+    }
     // Fallback to empty list if database query fails
     return { documents: [] };
   }

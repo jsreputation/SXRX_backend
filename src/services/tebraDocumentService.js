@@ -118,7 +118,15 @@ async function getDocumentsForPatient({ patientId, label, name }) {
     const result = await query(sql, params);
     return result.rows;
   } catch (error) {
-    console.error('❌ [DOCUMENT SERVICE] Error getting documents:', error.message);
+    // Don't log connection errors as errors - they're expected if DB is not running
+    const isConnectionError = error.message && (
+      error.message.includes('ECONNREFUSED') || 
+      error.message.includes('connect') ||
+      error.code === 'ECONNREFUSED'
+    );
+    if (!isConnectionError) {
+      console.error('❌ [DOCUMENT SERVICE] Error getting documents:', error.message);
+    }
     throw error;
   }
 }
@@ -194,6 +202,7 @@ async function deleteDocument(documentId) {
 async function initialize() {
   try {
     // Create table if it doesn't exist
+    // Suppress connection error logging - let calling code handle it gracefully
     await query(`
       CREATE TABLE IF NOT EXISTS tebra_documents (
         id SERIAL PRIMARY KEY,
@@ -232,8 +241,18 @@ async function initialize() {
   } catch (error) {
     // Table might already exist, that's okay
     if (!error.message.includes('already exists')) {
-      console.error('❌ [DOCUMENT SERVICE] Error initializing table:', error.message);
+      // Don't log connection errors as errors - they're expected if DB is not running
+      const isConnectionError = error.message && (
+        error.message.includes('ECONNREFUSED') || 
+        error.message.includes('connect') ||
+        error.code === 'ECONNREFUSED'
+      );
+      if (!isConnectionError) {
+        console.error('❌ [DOCUMENT SERVICE] Error initializing table:', error.message);
+      }
     }
+    // Re-throw so calling code knows initialization failed
+    throw error;
   }
 }
 

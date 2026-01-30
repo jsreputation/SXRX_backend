@@ -56,7 +56,6 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
 
 - **JWT-based authentication** with refresh token rotation
 - **Shopify token authentication**
-- **CSRF protection** with token generation and verification
 - **Data encryption at rest** (AES-256-GCM) for sensitive PII fields
 - **Two-Factor Authentication (2FA)** - TOTP-based with QR codes and backup codes
 - **CORS configuration** with allowed origins
@@ -98,7 +97,6 @@ SXRX Backend is a Node.js/Express API that serves as the central integration lay
   - `node-cron` (^3.0.3): Scheduled tasks
   - `uuid` (^9.0.0): Unique ID generation
   - `yup` (^1.2.0): Schema validation
-  - `cookie-parser` (^1.4.6): Cookie parsing for CSRF tokens
   - `compression` (^1.8.1): Response compression
   - `bullmq` (^5.66.6): Background job queue
   - `@sentry/node` (^10.36.0): Error tracking
@@ -145,12 +143,6 @@ backend/
 │   │   └── ...
 │   ├── services/        # Business logic services
 │   │   ├── tebraService.js
-│   │   ├── tebraService/  # Modular Tebra service
-│   │   │   ├── soapClient.js
-│   │   │   ├── soapUtils.js
-│   │   │   ├── soapXmlGenerators.js
-│   │   │   ├── patientMethods.js
-│   │   │   └── index.js
 │   │   ├── subscriptionService.js
 │   │   ├── billingSyncService.js
 │   │   ├── availabilityService.js
@@ -420,7 +412,7 @@ Most endpoints require authentication via:
 - `PUT /api/tebra-patient/:id` - Update patient
 
 #### Appointments
-- `POST /api/appointments/book` - Book appointment directly
+- `POST /api/appointments/book` - Patient (Shopify customer) sends a booking request to the provider in Tebra. By default creates as **Tentative** (provider reviews in Tebra → Tentative Appointments / Action Required → confirms; patient gets a confirmation once approved). Set `APPOINTMENT_REQUEST_AS_TENTATIVE=false` to create as Scheduled (immediate, no review).
 - `DELETE /api/appointments/:appointmentId` - Cancel appointment
 - `PUT /api/appointments/:appointmentId/reschedule` - Reschedule appointment
 - `GET /api/availability/:state` - Get filtered availability (with caching)
@@ -471,9 +463,6 @@ Most endpoints require authentication via:
 - `POST /api/2fa/verify` - Verify TOTP token
 - `GET /api/2fa/status` - Check if 2FA is enabled
 - `POST /api/2fa/regenerate-backup-codes` - Regenerate backup codes
-
-#### CSRF Protection
-- `GET /api/csrf-token` - Get CSRF token for state-changing requests
 
 #### Utility
 - `GET /health` - Health check endpoint (database status, uptime)
@@ -861,7 +850,6 @@ For issues, questions, or contributions, please refer to the project's issue tra
 ### Previous Updates (v3.0.0)
 
 #### Security Enhancements
-- ✅ **CSRF Protection**: Token-based CSRF protection with configurable exclusions
 - ✅ **Data Encryption**: AES-256-GCM encryption for sensitive PII fields at rest
 - ✅ **Two-Factor Authentication**: TOTP-based 2FA with QR code generation and backup codes
 - ✅ **Refresh Token System**: Token rotation and session timeout management

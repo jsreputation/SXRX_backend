@@ -197,14 +197,15 @@ function buildPatientPayload(customerData, mapping) {
 
 /**
  * Main controller function for Shopify appointment booking
- * 
- * This endpoint handles appointment booking requests that may come from:
+ *
+ * The patient (Shopify customer) sends a booking request to the provider in Tebra.
+ * This endpoint handles those requests from:
  * - Shopify App Proxy (if configured)
  * - Direct API calls from frontend
  * - Custom integration flows
- * 
- * This endpoint handles direct appointment booking requests from Shopify.
- * Appointments are created directly in Tebra (30 minutes duration).
+ *
+ * The backend creates the appointment in Tebra (30 minutes), which sends the
+ * patient's booking request to the state-mapped provider.
  */
 exports.handleShopifyAppointment = async (req, res) => {
   try {
@@ -342,9 +343,11 @@ exports.handleShopifyAppointment = async (req, res) => {
             meetingLink = meetingDetails ? meetingDetails.meetLink : null;
           }
 
+          // Tentative = booking REQUEST: provider receives in Tebra (Tentative Appointments / Action Required) and confirms. Set APPOINTMENT_REQUEST_AS_TENTATIVE=false for Scheduled.
+          const useTentative = process.env.APPOINTMENT_REQUEST_AS_TENTATIVE !== 'false';
           const appointmentData = {
             appointmentName: appointment.service_name || 'Telemedicine Consultation',
-            appointmentStatus: 'Scheduled',
+            appointmentStatus: useTentative ? 'Tentative' : 'Scheduled',
             appointmentType: 'P', // 'P' = Patient (valid Tebra enum value; AppointmentMode='Telehealth' handles telemedicine)
             startTime: startTime.toISOString(),
             endTime: endTime.toISOString(),
@@ -356,13 +359,11 @@ exports.handleShopifyAppointment = async (req, res) => {
           };
 
           const tebraAppointment = await tebraService.createAppointment(appointmentData);
-          console.log(`✅ [SHOPIFY APPOINTMENT] Created appointment in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
+          console.log(`✅ [SHOPIFY APPOINTMENT] ${useTentative ? 'Booking request' : 'Appointment'} created in Tebra: ${tebraAppointment.id || tebraAppointment.ID}`);
 
-          // Store meeting link for response (if available)
           appointment.tebraAppointmentId = tebraAppointment.id || tebraAppointment.ID;
-          if (meetingLink) {
-            appointment.meetingLink = meetingLink;
-          }
+          appointment._createdAsTentative = useTentative;
+          if (meetingLink) appointment.meetingLink = meetingLink;
         } catch (apptError) {
           console.error('Error creating Tebra appointment:', apptError?.message || apptError);
           // Continue with response even if appointment creation fails
@@ -382,10 +383,12 @@ exports.handleShopifyAppointment = async (req, res) => {
       message: 'Appointment booking processed successfully'
     };
 
-    // Add appointment details if available
     if (appointment && appointment.tebraAppointmentId) {
       response.appointment_id = appointment.tebraAppointmentId;
       response.meeting_link = appointment.meetingLink;
+      if (appointment._createdAsTentative) {
+        response.message = 'Booking request submitted. The provider will review and confirm.';
+      }
     }
 
     res.status(200).json(response);

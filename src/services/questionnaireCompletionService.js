@@ -135,6 +135,19 @@ async function checkCompletion({ email, customerId = null, productId, maxAgeHour
 }
 
 /**
+ * Get latest questionnaire completion for a product (used by orderValidationService).
+ * @param {Object} params
+ * @param {string} params.email - User email
+ * @param {number|null} params.customerId - Shopify customer ID (optional)
+ * @param {number} params.productId - Product ID
+ * @param {number} params.maxAgeHours - Maximum age in hours (default: 24)
+ * @returns {Promise<Object|null>} Completion record or null
+ */
+async function getLatestCompletion({ email, customerId = null, productId, maxAgeHours = 24 }) {
+  return checkCompletion({ email, customerId, productId, maxAgeHours });
+}
+
+/**
  * Validate questionnaire completion for checkout
  * @param {Object} params
  * @param {string} params.email - User email
@@ -223,6 +236,7 @@ module.exports = {
   ensureInit,
   recordCompletion,
   checkCompletion,
+  getLatestCompletion,
   validateForCheckout,
   getCompletionHistory,
   linkToCustomer
