@@ -1512,6 +1512,7 @@ ${appointmentXml}
       }
     };
 
+    const { startDate, endDate, timeZoneOffsetFromGMT } = this.getAppointmentDateFilters(options);
     const filters = {
       // Basic filters - removed PatientID filter to get all appointments
       PatientFullName: safeGet(options, 'patientFullName'),
@@ -1519,8 +1520,8 @@ ${appointmentXml}
       ServiceLocationName: safeGet(options, 'serviceLocationName'),
       ResourceName: safeGet(options, 'resourceName'),
       // Date filters
-      StartDate: safeGet(options, 'startDate'),
-      EndDate: safeGet(options, 'endDate'),
+      StartDate: startDate,
+      EndDate: endDate,
       FromCreatedDate: safeGet(options, 'fromCreatedDate'),
       ToCreatedDate: safeGet(options, 'toCreatedDate'),
       FromLastModifiedDate: safeGet(options, 'fromLastModifiedDate'),
@@ -1530,7 +1531,7 @@ ${appointmentXml}
       ConfirmationStatus: safeGet(options, 'confirmationStatus'),
       PatientCasePayerScenario: safeGet(options, 'patientCasePayerScenario'),
       Type: safeGet(options, 'type'),
-      TimeZoneOffsetFromGMT: safeGet(options, 'timeZoneOffsetFromGMT')
+      TimeZoneOffsetFromGMT: timeZoneOffsetFromGMT
     };
 
     // Remove undefined/null values
@@ -1542,6 +1543,32 @@ ${appointmentXml}
     }
 
     return cleanFilters;
+  }
+
+  normalizeAppointmentDateFilter(value, isEnd) {
+    if (!value) return value;
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return value.toISOString();
+    }
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (!trimmed) return value;
+    if (trimmed.includes('T')) return trimmed;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return isEnd ? `${trimmed}T23:59:59` : `${trimmed}T00:00:00`;
+    }
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime())) return parsed.toISOString();
+    return value;
+  }
+
+  getAppointmentDateFilters(options) {
+    const startRaw = options?.startDate || options?.fromDate;
+    const endRaw = options?.endDate || options?.toDate;
+    const startDate = this.normalizeAppointmentDateFilter(startRaw, false);
+    const endDate = this.normalizeAppointmentDateFilter(endRaw, true);
+    const timeZoneOffsetFromGMT = options?.timeZoneOffsetFromGMT ?? process.env.TEBRA_TIMEZONE_OFFSET;
+    return { startDate, endDate, timeZoneOffsetFromGMT };
   }
 
   // Build patient filters from options
@@ -2273,6 +2300,7 @@ ${appointmentXml}
       const client = await this.getClient();
       
       // Build the request structure for GetAppointments (only requesting IDs)
+      const { startDate, endDate, timeZoneOffsetFromGMT } = this.getAppointmentDateFilters(options);
       const args = {
         request: {
           RequestHeader: this.buildRequestHeader(),
@@ -2286,8 +2314,8 @@ ${appointmentXml}
             ServiceLocationName: options.serviceLocationName,
             ResourceName: options.resourceName,
             // Date filters
-            StartDate: options.startDate,
-            EndDate: options.endDate,
+            StartDate: startDate,
+            EndDate: endDate,
             FromCreatedDate: options.fromCreatedDate,
             ToCreatedDate: options.toCreatedDate,
             FromLastModifiedDate: options.fromLastModifiedDate,
@@ -2297,7 +2325,7 @@ ${appointmentXml}
             ConfirmationStatus: options.confirmationStatus,
             PatientCasePayerScenario: options.patientCasePayerScenario,
             Type: options.type,
-            TimeZoneOffsetFromGMT: options.timeZoneOffsetFromGMT
+            TimeZoneOffsetFromGMT: timeZoneOffsetFromGMT
           }
         }
       };
