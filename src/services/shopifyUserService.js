@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const SHOPIFY_CONFIG = {
   shopDomain: process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN,
   accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
-  apiVersion: '2024-01'
+  apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01'
 };
 
 // Helper function to make authenticated Shopify API calls

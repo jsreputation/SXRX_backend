@@ -337,6 +337,88 @@ class ShopifyStorefrontAuthController {
     }
   };
 
+  // Create backend session for Shopify logged-in customers (new customer accounts)
+  createSession = async (req, res) => {
+    try {
+      const { clientLocation } = req;
+      const { customerId, email } = req.body || {};
+
+      if (!customerId || !email) {
+        return res.status(400).json({
+          success: false,
+          message: 'customerId and email are required',
+          location: clientLocation
+        });
+      }
+
+      if (!process.env.JWT_SECRET) {
+        console.error('❌ JWT_SECRET is not configured');
+        return res.status(500).json({
+          success: false,
+          message: 'Server configuration error - JWT secret missing'
+        });
+      }
+
+      const shopifyUserService = require('../services/shopifyUserService');
+      const customer = await shopifyUserService.getCustomer(customerId);
+      if (!customer) {
+        return res.status(401).json({
+          success: false,
+          message: 'Customer not found',
+          location: clientLocation
+        });
+      }
+
+      const emailMatch = (customer.email || '').toLowerCase() === String(email).toLowerCase();
+      if (!emailMatch) {
+        return res.status(403).json({
+          success: false,
+          message: 'Customer email does not match',
+          location: clientLocation
+        });
+      }
+
+      const tokenPayload = {
+        sub: customer.id,
+        customerId: customer.id,
+        email: customer.email,
+        role: 'customer'
+      };
+
+      const jwtToken = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '24h' });
+
+      // Set HttpOnly cookie for JWT
+      try {
+        const isProd = process.env.NODE_ENV === 'production';
+        const cookieOpts = { httpOnly: true, secure: isProd, sameSite: 'lax', path: '/' };
+        res.cookie('sxrx_jwt', jwtToken, cookieOpts);
+      } catch (e) {
+        console.warn('Warning: failed to set HttpOnly cookie sxrx_jwt:', e?.message || e);
+      }
+
+      res.json({
+        success: true,
+        token: jwtToken,
+        customer: {
+          id: customer.id,
+          email: customer.email,
+          firstName: customer.first_name,
+          lastName: customer.last_name,
+          phone: customer.phone
+        },
+        location: clientLocation
+      });
+    } catch (error) {
+      console.error('Create session error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to create session',
+        error: error.message,
+        location: req.clientLocation
+      });
+    }
+  };
+
   // Customer registration
   register = async (req, res) => {
     try {
@@ -696,15 +778,28 @@ class ShopifyStorefrontAuthController {
         });
       }
 
-      if (!shopifyAccessToken) {
-        return res.status(401).json({
-          success: false,
-          message: 'No Shopify access token found',
-          location: clientLocation
-        });
+      let customer = null;
+      if (shopifyAccessToken) {
+        customer = await this.getCustomer(shopifyAccessToken);
+      } else {
+        const customerId = req.user?.shopifyCustomerId || req.user?.id || req.user?.customerId;
+        if (!customerId) {
+          return res.status(401).json({
+            success: false,
+            message: 'No Shopify access token found',
+            location: clientLocation
+          });
+        }
+        const shopifyUserService = require('../services/shopifyUserService');
+        customer = await shopifyUserService.getCustomer(customerId);
+        if (!customer) {
+          return res.status(401).json({
+            success: false,
+            message: 'Customer not found',
+            location: clientLocation
+          });
+        }
       }
-
-      const customer = await this.getCustomer(shopifyAccessToken);
 
       // Lookup Tebra mapping from PostgreSQL
       let tebraPatientId = null;
@@ -743,18 +838,20 @@ class ShopifyStorefrontAuthController {
         console.warn('Tebra map lookup in /me failed:', e?.message || e);
       }
 
+      const normalizedCustomer = {
+        id: customer.id,
+        email: customer.email,
+        firstName: customer.firstName || customer.first_name || null,
+        lastName: customer.lastName || customer.last_name || null,
+        phone: customer.phone || null,
+        role: 'customer',
+        addresses: customer.addresses || [],
+        defaultAddress: customer.defaultAddress || customer.default_address || null
+      };
+
       res.json({
         success: true,
-        customer: {
-          id: customer.id,
-          email: customer.email,
-          firstName: customer.firstName,
-          lastName: customer.lastName,
-          phone: customer.phone,
-          role: 'customer',
-          addresses: customer.addresses,
-          defaultAddress: customer.defaultAddress
-        },
+        customer: normalizedCustomer,
         tebraPatientId: tebraPatientId || null, // Explicitly ensure null (not undefined)
         location: clientLocation
       });

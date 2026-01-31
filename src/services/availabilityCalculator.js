@@ -89,7 +89,8 @@ class AvailabilityCalculator {
         practiceId,
         providerId,
         startDate: fromDate,
-        endDate: toDate
+        endDate: toDate,
+        state
       });
 
       const list = appointments.appointments || [];

@@ -5,11 +5,10 @@ This document outlines the improvements made to the Tebra SOAP API implementatio
 
 ## Key Improvements Made
 
-### 1. ✅ Removed SOAP Library Dependency
-- **Removed**: `soap` npm package dependency
-- **Removed**: `soapClient.js` wrapper class
-- **Removed**: Legacy SOAP client methods (`getClient()`, `clientPromise`)
-- **Result**: Cleaner, more maintainable codebase using only raw SOAP calls
+### 1. ✅ Raw SOAP + node-soap Fallback
+- **Primary**: Raw SOAP requests for better control over XML
+- **Fallback**: `soap` client remains for edge cases that require WSDL-shaped payloads
+- **Result**: Raw SOAP is the default path with a safe fallback when needed
 
 ### 2. ✅ Enhanced XML Generation
 - **Added**: XML declaration (`<?xml version="1.0" encoding="utf-8"?>`)
@@ -35,9 +34,9 @@ This document outlines the improvements made to the Tebra SOAP API implementatio
 - **Added**: User-Agent header for better API identification
 
 ### 6. ✅ Configuration Improvements
-- **Removed**: Unnecessary environment variables (`TEBRA_SOAP_WSDL`, `TEBRA_USE_RAW_SOAP`)
+- **Supported**: `TEBRA_SOAP_ENDPOINT` and optional `TEBRA_SOAP_WSDL`
+- **Optional**: `TEBRA_USE_RAW_SOAP` (default true; set to false to force node-soap)
 - **Added**: Debug configuration options (`TEBRA_DEBUG_REQUESTS`, `TEBRA_DEBUG_RESPONSES`)
-- **Simplified**: Configuration management
 
 ## Technical Details
 

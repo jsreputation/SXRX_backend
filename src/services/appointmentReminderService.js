@@ -34,6 +34,11 @@ async function getAppointmentsNeedingReminders(hoursBefore) {
     // Filter appointments that haven't received this reminder yet
     // In a real implementation, you'd track sent reminders in a database
     const appointmentsToRemind = (appointments.appointments || appointments || []).filter(apt => {
+      const status = (apt.AppointmentStatus || apt.appointmentStatus || apt.status || '').toString().toLowerCase();
+      if (!status || (status !== 'scheduled' && status !== 'confirmed')) {
+        return false;
+      }
+
       const aptStart = new Date(apt.StartTime || apt.startTime || apt.start_date);
       const hoursUntil = (aptStart.getTime() - now.getTime()) / (1000 * 60 * 60);
       

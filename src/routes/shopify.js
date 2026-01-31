@@ -3,7 +3,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { auth, optionalAuth } = require('../middleware/shopifyTokenAuth');
+const { auth } = require('../middleware/shopifyTokenAuth');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
 const tebraService = require('../services/tebraService');
@@ -335,7 +335,7 @@ router.get('/products/:productId', auth, async (req, res) => {
  */
 const { cacheStrategies } = require('../middleware/cacheHeaders');
 
-router.get('/customers/:customerId/chart', optionalAuth, cacheStrategies.private(300), async (req, res) => {
+router.get('/customers/:customerId/chart', auth, cacheStrategies.private(300), async (req, res) => {
   try {
     const { customerId } = req.params;
     console.log(`📋 [CHART] Request for customer ${customerId}`, {
@@ -343,6 +343,11 @@ router.get('/customers/:customerId/chart', optionalAuth, cacheStrategies.private
       authType: req.user?.authType || 'none',
       customerIdFromAuth: req.user?.shopifyCustomerId || req.user?.id || null
     });
+
+    const authCustomerId = req.user?.shopifyCustomerId || req.user?.id || req.user?.customerId;
+    if (authCustomerId && String(authCustomerId) !== String(customerId)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
     
     // Check cache for chart data
     const cacheService = require('../services/cacheService');
@@ -517,9 +522,14 @@ router.get('/customers/:customerId/chart', optionalAuth, cacheStrategies.private
  * This is a convenience endpoint that returns just appointments (also available via /chart endpoint)
  * Note: Auth is optional - if no token provided, we'll still try to fetch data (for customer account pages)
  */
-router.get('/customers/:customerId/appointments', optionalAuth, async (req, res) => {
+router.get('/customers/:customerId/appointments', auth, async (req, res) => {
   try {
     const { customerId } = req.params;
+
+    const authCustomerId = req.user?.shopifyCustomerId || req.user?.id || req.user?.customerId;
+    if (authCustomerId && String(authCustomerId) !== String(customerId)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
     console.log(`📅 [APPOINTMENTS] Request for customer ${customerId}`, {
       hasAuth: !!req.user,
       authType: req.user?.authType || 'none',
@@ -607,9 +617,14 @@ router.get('/customers/:customerId/appointments', optionalAuth, async (req, res)
  * Cancel an appointment (customer-facing endpoint)
  * Note: Auth is optional - if no token provided, we'll still try to process (for customer account pages)
  */
-router.put('/customers/:customerId/appointments/:appointmentId/cancel', optionalAuth, async (req, res) => {
+router.put('/customers/:customerId/appointments/:appointmentId/cancel', auth, async (req, res) => {
   try {
     const { customerId, appointmentId } = req.params;
+
+    const authCustomerId = req.user?.shopifyCustomerId || req.user?.id || req.user?.customerId;
+    if (authCustomerId && String(authCustomerId) !== String(customerId)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
     console.log(`❌ [APPOINTMENT CANCEL] Request to cancel appointment ${appointmentId} for customer ${customerId}`);
     
     const customerPatientMapService = require('../services/customerPatientMapService');
@@ -699,9 +714,14 @@ router.put('/customers/:customerId/appointments/:appointmentId/cancel', optional
  * Update an appointment (customer-facing endpoint for rescheduling)
  * Note: Auth is optional - if no token provided, we'll still try to process (for customer account pages)
  */
-router.put('/customers/:customerId/appointments/:appointmentId/update', optionalAuth, async (req, res) => {
+router.put('/customers/:customerId/appointments/:appointmentId/update', auth, async (req, res) => {
   try {
     const { customerId, appointmentId } = req.params;
+
+    const authCustomerId = req.user?.shopifyCustomerId || req.user?.id || req.user?.customerId;
+    if (authCustomerId && String(authCustomerId) !== String(customerId)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
     const { startTime, endTime, notes } = req.body;
     
     console.log(`✏️ [APPOINTMENT UPDATE] Request to update appointment ${appointmentId} for customer ${customerId}`);

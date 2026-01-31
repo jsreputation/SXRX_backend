@@ -42,4 +42,15 @@ async function sendEmail({ to, subject, text, html }) {
   }
 }
 
-module.exports = { sendProviderAlert, sendEmail };
+async function sendSMS({ to, message }) {
+  if (!to || !message) {
+    console.warn('sendSMS: missing recipient or message');
+    return { success: false, error: 'Missing recipient or message' };
+  }
+
+  // SMS provider is not configured in this project yet.
+  console.warn('sendSMS: SMS provider not configured');
+  return { success: false, error: 'SMS provider not configured' };
+}
+
+module.exports = { sendProviderAlert, sendEmail, sendSMS };

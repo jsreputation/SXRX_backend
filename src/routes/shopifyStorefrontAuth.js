@@ -10,6 +10,7 @@ const { validateRegistration, sanitizeRequestBody } = require('../middleware/val
 
 // Rate limiting: tighten login/register endpoints
 const authLimiter = createRateLimiter({ windowMs: 60_000, max: 5 }); // 5 per minute per IP/email
+const sessionLimiter = createRateLimiter({ windowMs: 60_000, max: 20 }); // 20 per minute per IP
 
 /**
  * @swagger
@@ -90,6 +91,37 @@ router.post('/login', authLimiter, express.json({ limit: '50kb' }), sanitizeRequ
  *         description: Validation error
  */
 router.post('/register', authLimiter, express.json({ limit: '50kb' }), sanitizeRequestBody, validateRegistration, shopifyStorefrontAuthController.register);
+
+/**
+ * @swagger
+ * /api/shopify-storefront/session:
+ *   post:
+ *     summary: Create backend session for logged-in Shopify customers
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - customerId
+ *               - email
+ *             properties:
+ *               customerId:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *     responses:
+ *       200:
+ *         description: Session created
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Customer not found
+ */
+router.post('/session', sessionLimiter, express.json({ limit: '20kb' }), sanitizeRequestBody, shopifyStorefrontAuthController.createSession);
 
 /**
  * @swagger

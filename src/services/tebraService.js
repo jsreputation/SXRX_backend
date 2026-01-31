@@ -3,6 +3,7 @@ const axios = require('axios');
 const { patientFieldsBasic, patientFieldsComplete } = require('./tebraPatientFields');
 const tebraNormalizers = require('./tebraServiceNormalizers');
 const tebraSoapParsing = require('./tebraServiceSoapParsing');
+const providerMapping = require('../config/providerMapping');
 
 // Ensure Tebra SOAP URLs use 2.1 only (not 3.x). Project uses SOAP 2.1.
 function ensureSoap21Url(url) {
@@ -30,7 +31,9 @@ function resolveSoapUrls(input) {
 class TebraService {
   constructor() {
     const soapConfig = resolveSoapUrls(
-      process.env.TEBRA_SOAP_ENDPOINT || 'https://webservice.kareo.com/services/soap/2.1/KareoServices.svc?wsdl'
+      process.env.TEBRA_SOAP_WSDL
+        || process.env.TEBRA_SOAP_ENDPOINT
+        || 'https://webservice.kareo.com/services/soap/2.1/KareoServices.svc?wsdl'
     );
     this.soapEndpoint = soapConfig.endpoint;
     this.wsdlUrl = soapConfig.wsdlUrl;
@@ -39,6 +42,7 @@ class TebraService {
     this.user = process.env.TEBRA_USER;
     this.practiceName = process.env.TEBRA_PRACTICE_NAME;
     this.namespace = process.env.TEBRA_SOAP_NAMESPACE || 'http://www.kareo.com/api/schemas/';
+    this.useRawSOAP = String(process.env.TEBRA_USE_RAW_SOAP || 'true').toLowerCase() !== 'false';
     
     // API rate limiting configuration
     this.batchSize = parseInt(process.env.TEBRA_BATCH_SIZE) || 5;
@@ -61,11 +65,6 @@ class TebraService {
       console.error('❌ Connection test failed:', error.message);
       return { success: false, error: error.message };
     }
-  }
-
-  // Connect method (matches working client)
-  async connect() {
-    return await this.testConnection();
   }
 
   // Get SOAP client (restored original implementation)
@@ -456,7 +455,7 @@ ${patientXml}        </sch:Patient>
           fieldOrderInXml.push(fieldName);
         }
       });
-      console.log(`🔍 [TEBRA] Field order in generated XML: ${fieldOrderInXml.join(' -> ')}`);
+      this.logSoapDebug('🔍 [TEBRA] Field order in generated XML:', fieldOrderInXml.join(' -> '));
       const startTimeIndex = fieldOrderInXml.indexOf('StartTime');
       const practiceIdIndex = fieldOrderInXml.indexOf('PracticeId');
       if (startTimeIndex !== -1 && practiceIdIndex !== -1 && startTimeIndex <= practiceIdIndex)
@@ -688,18 +687,15 @@ ${appointmentXml}
       const soapXml = this.generateRawSOAPXML(methodName, fields, filters);
       
       // Log request for debugging (configurable)
-      if (process.env.TEBRA_DEBUG_REQUESTS === 'true' || methodName === 'CreateAppointment') {
-        const requestPreview = soapXml.length > 2000 
-          ? soapXml.substring(0, 2000) + '...' 
-          : soapXml;
-        console.log(`🔍 [TEBRA] ${methodName} SOAP request XML:`, requestPreview);
-        
+      if (this.shouldLogSoap()) {
+        this.logSoapDebug(`🔍 [TEBRA] ${methodName} SOAP request XML:`, soapXml);
+
         // Log specific fields for appointment methods
         if (methodName === 'CreateAppointment') {
           const startTimeMatch = soapXml.match(/<sch:StartTime[^>]*>([^<]+)<\/sch:StartTime>/i);
           const endTimeMatch = soapXml.match(/<sch:EndTime[^>]*>([^<]+)<\/sch:EndTime>/i);
-          if (startTimeMatch) console.log(`🔍 [TEBRA] StartTime: ${startTimeMatch[1]}`);
-          if (endTimeMatch) console.log(`🔍 [TEBRA] EndTime: ${endTimeMatch[1]}`);
+          if (startTimeMatch) this.logSoapDebug('🔍 [TEBRA] StartTime:', startTimeMatch[1]);
+          if (endTimeMatch) this.logSoapDebug('🔍 [TEBRA] EndTime:', endTimeMatch[1]);
         }
       }
       
@@ -719,11 +715,8 @@ ${appointmentXml}
       );
       
       // Log response for debugging
-      if (process.env.TEBRA_DEBUG_RESPONSES === 'true') {
-        const responsePreview = response.data.length > 2000 
-          ? response.data.substring(0, 2000) + '...' 
-          : response.data;
-        console.log(`🔍 [TEBRA] ${methodName} SOAP response:`, responsePreview);
+      if (this.shouldLogSoap()) {
+        this.logSoapDebug(`🔍 [TEBRA] ${methodName} SOAP response:`, response.data);
       }
       
       // Check for SOAP faults in response
@@ -744,13 +737,12 @@ ${appointmentXml}
         throw new Error(`Tebra API Error: ${errorMessage}`);
       }
       
-      if (process.env.TEBRA_DEBUG_AUTH === 'true') {
-        console.log('[TEBRA DEBUG] Response preview:', response.data.substring(0, 500));
+      if (this.shouldLogSoap()) {
         const authenticated = response.data.includes('<Authenticated>true</Authenticated>');
         const customerKeyValid = response.data.includes('<CustomerKeyValid>true</CustomerKeyValid>');
         const authorized = response.data.includes('<Authorized>true</Authorized>');
         const isError = response.data.includes('<IsError>true</IsError>');
-        console.log('[TEBRA DEBUG] Auth status:', { authenticated, customerKeyValid, authorized, isError });
+        this.logSoapDebug('[TEBRA DEBUG] Auth status:', { authenticated, customerKeyValid, authorized, isError });
       }
 
       // Check for authentication/authorization failures
@@ -866,9 +858,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("CreatePatient args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('CreatePatient args:', args);
       const [result] = await client.CreatePatientAsync(args);
-      console.log("CreatePatient result:", result);
+      this.logSoapDebug('CreatePatient result:', result);
       return this.normalizeCreatePatientResponse(result);
     } catch (error) {
       // Parse SOAP fault if available
@@ -886,7 +878,7 @@ ${appointmentXml}
       console.error('CreatePatient error details:', {
         message: error.message,
         fault: faultMsg,
-        args: JSON.stringify(args, null, 2)
+        args: this.redactSoapArgs(args)
       });
       
       // If InternalServiceFault, log helpful diagnostic info
@@ -1018,9 +1010,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("GetPatients args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('GetPatients args:', args);
       const [result] = await client.GetPatientsAsync(args);
-      console.log("GetPatients result:", result);
+      this.logSoapDebug('GetPatients result:', result);
       return this.normalizeGetPatientsResponse(result);
     } catch (error) {
       this.handleSOAPError(error, 'GetPatients', { options });
@@ -1031,7 +1023,7 @@ ${appointmentXml}
   // Search patients with specific criteria
   async searchPatients(searchOptions = {}) {
     try {
-      console.log('🔍 Searching patients with criteria:', searchOptions);
+      this.logSoapDebug('🔍 Searching patients with criteria:', searchOptions);
       
       // Build search filters based on the search options
       const searchFilters = {};
@@ -1095,7 +1087,10 @@ ${appointmentXml}
     // If it's an international number (more than 10 digits), take the last 10 digits
     if (digitsOnly.length > 10) {
       const last10Digits = digitsOnly.slice(-10);
-      console.log(`📞 Phone number ${phone} formatted to ${last10Digits} (last 10 digits)`);
+      this.logSoapDebug('📞 Phone number formatted (last 10 digits):', {
+        original: phone,
+        formatted: last10Digits
+      });
       return last10Digits;
     }
     
@@ -1109,7 +1104,7 @@ ${appointmentXml}
 
   // Build patient data for CreatePatient SOAP call
   buildPatientData(userData) {
-    console.log('🔍 Building patient data from:', JSON.stringify(userData, null, 2));
+    this.logSoapDebug('🔍 Building patient data from:', userData);
     
     // Build patient data in the correct order according to SOAP schema
     const patientData = {};
@@ -1186,7 +1181,7 @@ ${appointmentXml}
       }
     }
 
-    console.log('🔍 Built patient data:', JSON.stringify(cleanPatientData, null, 2));
+    this.logSoapDebug('🔍 Built patient data:', cleanPatientData);
     return cleanPatientData;
   }
 
@@ -1222,29 +1217,32 @@ ${appointmentXml}
         const byGuid = reasons.find(r => (r.appointmentReasonGuid || '').toLowerCase() === input.toLowerCase());
         if (byGuid && (byGuid.id != null || byGuid.appointmentReasonId != null)) {
           const id = byGuid.id ?? byGuid.appointmentReasonId;
-          console.log(`✅ Found appointment reason ID: ${id} for GUID: "${input}"`);
+          this.logSoapDebug('✅ Found appointment reason ID for GUID:', { id, guid: input });
           return parseInt(String(id), 10);
         }
-        console.log(`⚠️ No appointment reason found for GUID: "${input}"`);
+        this.logSoapDebug('⚠️ No appointment reason found for GUID:', input);
         return null;
       }
 
       // Find by name (case-insensitive)
-      console.log(`🔍 Looking up appointment reason ID for name: "${input}"`);
+      this.logSoapDebug('🔍 Looking up appointment reason ID for name:', input);
       const idx = reasons.findIndex(reason => reason.name && reason.name.toLowerCase() === input.toLowerCase());
       const matchingReason = idx >= 0 ? reasons[idx] : null;
 
       if (matchingReason && (matchingReason.id != null || matchingReason.appointmentReasonId != null)) {
         const id = matchingReason.id ?? matchingReason.appointmentReasonId;
-        console.log(`✅ Found appointment reason ID: ${id} for name: "${input}"`);
+        this.logSoapDebug('✅ Found appointment reason ID for name:', { id, name: input });
         return parseInt(String(id), 10);
       }
       if (matchingReason && idx >= 0) {
         const fallbackId = idx + 1;
-        console.log(`⚠️ Using 1-based index as fallback AppointmentReasonID for "${input}": ${fallbackId}. If CreateAppointment fails, set TEBRA_DEFAULT_APPT_REASON_ID to the real ID from Tebra.`);
+        this.logSoapDebug('⚠️ Using 1-based index as fallback AppointmentReasonID:', {
+          name: input,
+          fallbackId
+        });
         return fallbackId;
       }
-      console.log(`⚠️ No appointment reason found for name: "${input}"`);
+      this.logSoapDebug('⚠️ No appointment reason found for name:', input);
       return null;
     } catch (error) {
       console.error(`❌ Error looking up appointment reason ID for "${reasonNameOrId}":`, error.message);
@@ -1495,6 +1493,29 @@ ${appointmentXml}
     };
   }
 
+  resolvePracticeName(options = {}) {
+    const direct = options.practiceName || options.PracticeName;
+    if (direct) return direct;
+
+    const stateInput = options.state || options.State;
+    if (stateInput) {
+      const key = String(stateInput).trim().toUpperCase();
+      const mapping = providerMapping[key];
+      if (mapping && mapping.practiceName) return mapping.practiceName;
+    }
+
+    const practiceId = options.practiceId || options.PracticeId;
+    if (practiceId != null && practiceId !== '') {
+      const practiceIdStr = String(practiceId);
+      const match = Object.values(providerMapping).find(
+        (entry) => entry && entry.practiceId && String(entry.practiceId) === practiceIdStr && entry.practiceName
+      );
+      if (match && match.practiceName) return match.practiceName;
+    }
+
+    return this.practiceName || undefined;
+  }
+
   // Build appointment filters from options
   buildAppointmentFilters(options) {
     // Handle undefined or null options
@@ -1513,10 +1534,11 @@ ${appointmentXml}
     };
 
     const { startDate, endDate, timeZoneOffsetFromGMT } = this.getAppointmentDateFilters(options);
+    const resolvedPracticeName = this.resolvePracticeName(options);
     const filters = {
       // Basic filters - removed PatientID filter to get all appointments
       PatientFullName: safeGet(options, 'patientFullName'),
-      PracticeName: safeGet(options, 'practiceName'),
+      PracticeName: resolvedPracticeName,
       ServiceLocationName: safeGet(options, 'serviceLocationName'),
       ResourceName: safeGet(options, 'resourceName'),
       // Date filters
@@ -1657,9 +1679,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("GetPatient args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('GetPatient args:', args);
       const [result] = await client.GetPatientAsync(args);
-      console.log("GetPatient result:", result);
+      this.logSoapDebug('GetPatient result:', result);
       return this.normalizeGetPatientResponse(result);
     } catch (error) {
       // Parse SOAP fault if available
@@ -1872,9 +1894,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       const client = await this.getClient();
-      console.log("UpdatePatient args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('UpdatePatient args:', args);
       const [result] = await client.UpdatePatientAsync(args);
-      console.log("UpdatePatient result:", result);
+      this.logSoapDebug('UpdatePatient result:', result);
       return this.normalizeGetPatientResponse(result);
     } catch (error) {
       console.error('Tebra SOAP: UpdatePatient error', error.message);
@@ -1897,9 +1919,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("DeactivatePatient args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('DeactivatePatient args:', args);
       const [result] = await client.DeactivatePatientAsync(args);
-      console.log("DeactivatePatient result:", result);
+      this.logSoapDebug('DeactivatePatient result:', result);
       return { success: 1, tebraResponse: result };
     } catch (error) {
       console.error('Tebra SOAP: DeactivatePatient error', error.message);
@@ -2079,9 +2101,9 @@ ${appointmentXml}
 
     try {
       const client = await this.getClient();
-      console.log('CreateDocument args:', JSON.stringify(args, null, 2));
+      this.logSoapArgs('CreateDocument args:', args);
       const [result] = await client.CreateDocumentAsync(args);
-      console.log('CreateDocument result:', result);
+      this.logSoapDebug('CreateDocument result:', result);
       
       // Write raw Tebra response to file for debugging
       try {
@@ -2145,9 +2167,9 @@ ${appointmentXml}
         try {
           const client = await this.getClient();
           const minimalArgs = buildArgs(documentData, true);
-          console.log('CreateDocument retry (minimal) args:', JSON.stringify(minimalArgs, null, 2));
+          this.logSoapArgs('CreateDocument retry (minimal) args:', minimalArgs);
           const [result2] = await client.CreateDocumentAsync(minimalArgs);
-          console.log('CreateDocument retry result:', result2);
+          this.logSoapDebug('CreateDocument retry result:', result2);
           const normalizedResult2 = this.normalizeCreateDocumentResponse(result2);
           
           // Store document metadata in local database for retrieval (optional - only if database is available)
@@ -2215,9 +2237,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("DeleteDocument args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('DeleteDocument args:', args);
       const [result] = await client.DeleteDocumentAsync(args);
-      console.log("DeleteDocument result:", result);
+      this.logSoapDebug('DeleteDocument result:', result);
       
       // Also delete from local database (soft delete)
       try {
@@ -2239,16 +2261,18 @@ ${appointmentXml}
   // Appointments
   async getAppointments(options = {}) {
     try {
-      console.log('🔍 [GET APPOINTMENTS] Starting with options:', options);
+      this.logSoapDebug('🔍 [GET APPOINTMENTS] Starting with options:', options);
       
       // Step 1: Get appointment IDs using GetAppointments
       const appointmentIds = await this.getAppointmentIds(options);
-      console.log(`📋 [GET APPOINTMENTS] Found ${appointmentIds.length} appointment IDs`);
-      console.log("📋 [GET APPOINTMENTS] Appointment IDs array:", appointmentIds);
+      this.logSoapDebug('📋 [GET APPOINTMENTS] Found appointment IDs:', {
+        count: appointmentIds.length
+      });
+      this.logSoapDebug('📋 [GET APPOINTMENTS] Appointment IDs array:', appointmentIds);
       
       // Add a small delay after getting IDs before processing details
       if (appointmentIds.length > 0) {
-        console.log(`⏳ [GET APPOINTMENTS] Waiting ${this.delayAfterGetIds}ms before fetching details...`);
+        this.logSoapDebug('⏳ [GET APPOINTMENTS] Waiting before fetching details (ms):', this.delayAfterGetIds);
         await new Promise(resolve => setTimeout(resolve, this.delayAfterGetIds));
       }
       
@@ -2262,10 +2286,12 @@ ${appointmentXml}
       }
       
       // Step 2: Get full details for each appointment using GetAppointment
-      console.log('🔍 [GET APPOINTMENTS] Fetching full details for each appointment...');
+      this.logSoapDebug('🔍 [GET APPOINTMENTS] Fetching full details for each appointment...', {});
       const appointments = await this.getAppointmentDetails(appointmentIds, options.requestingPatientId);
       
-      console.log(`✅ [GET APPOINTMENTS] Successfully retrieved ${appointments.length} appointments with full details`);
+      this.logSoapDebug('✅ [GET APPOINTMENTS] Retrieved appointments with full details:', {
+        count: appointments.length
+      });
       
       return {
         appointments: appointments,
@@ -2282,18 +2308,18 @@ ${appointmentXml}
   // Get appointment IDs using GetAppointments SOAP call
   async getAppointmentIds(options = {}) {
     try {
-      console.log("🔍 [GET APPOINTMENT IDS] Starting with options:", JSON.stringify(options, null, 2));
+      this.logSoapDebug('🔍 [GET APPOINTMENT IDS] Starting with options:', options);
       
       // Use raw SOAP if enabled, otherwise use soap library
       if (this.useRawSOAP) {
         const fields = { ID: 1 }; // Only request ID field for efficiency
         const filters = this.buildAppointmentFilters(options);
-        console.log("🔍 [RAW SOAP] GetAppointmentIds fields requested:", JSON.stringify(fields, null, 2));
-        console.log("🔍 [RAW SOAP] GetAppointmentIds filters:", JSON.stringify(filters, null, 2));
+        this.logSoapDebug('🔍 [RAW SOAP] GetAppointmentIds fields requested:', fields);
+        this.logSoapDebug('🔍 [RAW SOAP] GetAppointmentIds filters:', filters);
         const result = await this.callRawSOAPMethod('GetAppointments', fields, filters);
         const parsedResult = this.parseRawSOAPResponse(result, 'GetAppointments');
         const appointmentIds = this.extractAppointmentIds(parsedResult);
-        console.log("📋 [GET APPOINTMENT IDS] Final appointment IDs array:", appointmentIds);
+        this.logSoapDebug('📋 [GET APPOINTMENT IDS] Final appointment IDs array:', appointmentIds);
         return appointmentIds;
       }
 
@@ -2301,6 +2327,7 @@ ${appointmentXml}
       
       // Build the request structure for GetAppointments (only requesting IDs)
       const { startDate, endDate, timeZoneOffsetFromGMT } = this.getAppointmentDateFilters(options);
+      const resolvedPracticeName = this.resolvePracticeName(options);
       const args = {
         request: {
           RequestHeader: this.buildRequestHeader(),
@@ -2310,7 +2337,7 @@ ${appointmentXml}
           Filter: {
             // Basic filters - removed PatientID filter to get all appointments
             PatientFullName: options.patientFullName,
-            PracticeName: options.practiceName,
+            PracticeName: resolvedPracticeName,
             ServiceLocationName: options.serviceLocationName,
             ResourceName: options.resourceName,
             // Date filters
@@ -2333,11 +2360,11 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("GetAppointmentIds args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('GetAppointmentIds args:', args);
       const [result] = await client.GetAppointmentsAsync(args);
-      console.log("GetAppointmentIds result:", result);
+      this.logSoapDebug('GetAppointmentIds result:', result);
       const appointmentIds = this.extractAppointmentIds(result);
-      console.log("📋 [GET APPOINTMENT IDS] Final appointment IDs array:", appointmentIds);
+      this.logSoapDebug('📋 [GET APPOINTMENT IDS] Final appointment IDs array:', appointmentIds);
       return appointmentIds;
     } catch (error) {
       console.error('Tebra SOAP: GetAppointmentIds error', error.message);
@@ -2366,7 +2393,10 @@ ${appointmentXml}
       }
     }
     
-    console.log(`📋 [EXTRACT IDS] Extracted ${appointmentIds.length} appointment IDs:`, appointmentIds);
+    this.logSoapDebug('📋 [EXTRACT IDS] Extracted appointment IDs:', {
+      count: appointmentIds.length,
+      ids: appointmentIds
+    });
     return appointmentIds;
   }
 
@@ -2378,14 +2408,22 @@ ${appointmentXml}
     const batchSize = this.batchSize;
     for (let i = 0; i < appointmentIds.length; i += batchSize) {
       const batch = appointmentIds.slice(i, i + batchSize);
-      console.log(`🔄 [BATCH] Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(appointmentIds.length / batchSize)} (${batch.length} appointments)`);
+      this.logSoapDebug('🔄 [BATCH] Processing appointment batch:', {
+        batchIndex: Math.floor(i / batchSize) + 1,
+        batchTotal: Math.ceil(appointmentIds.length / batchSize),
+        batchSize: batch.length
+      });
       
       // Process batch with small delays between calls to be respectful to the API
       const batchResults = [];
       for (let j = 0; j < batch.length; j++) {
         const appointmentId = batch[j];
         try {
-          console.log(`🔍 [BATCH] Getting appointment ${j + 1}/${batch.length}: ${appointmentId}`);
+          this.logSoapDebug('🔍 [BATCH] Getting appointment:', {
+            index: j + 1,
+            total: batch.length,
+            appointmentId
+          });
           const appointment = await this.getAppointment(appointmentId, requestingPatientId);
           batchResults.push(appointment);
           
@@ -2405,7 +2443,7 @@ ${appointmentXml}
       
       // Add a delay between batches to be respectful to the API
       if (i + batchSize < appointmentIds.length) {
-        console.log(`⏳ [BATCH] Waiting ${this.delayBetweenBatches}ms before next batch...`);
+        this.logSoapDebug('⏳ [BATCH] Waiting before next batch (ms):', this.delayBetweenBatches);
         await new Promise(resolve => setTimeout(resolve, this.delayBetweenBatches));
       }
     }
@@ -2438,9 +2476,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("GetAppointment args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('GetAppointment args:', args);
       const [result] = await client.GetAppointmentAsync(args);
-      console.log("GetAppointment result:", result);
+      this.logSoapDebug('GetAppointment result:', result);
       return this.normalizeGetAppointmentResponse(result, requestingPatientId);
     } catch (error) {
       console.error('Tebra SOAP: GetAppointment error', error.message);
@@ -2453,14 +2491,14 @@ ${appointmentXml}
       // Use raw SOAP if enabled, otherwise use soap library
       if (this.useRawSOAP) {
         const appointment = await this.buildAppointmentData(appointmentData);
-        console.log('🔍 Built appointment data:', JSON.stringify(appointment, null, 2));
+        this.logSoapDebug('🔍 Built appointment data:', appointment);
         // Tebra requires AppointmentReasonID; avoid sending without it (causes 500 / "Error translating AppointmentCreate to CreateAppointmentV3Request")
         if (appointment.AppointmentReasonID == null) {
           const hint = 'Set TEBRA_DEFAULT_APPT_REASON_ID or TEBRA_DEFAULT_APPT_REASON_NAME (e.g. "Counseling"). Run: node scripts/list-tebra-appointment-reasons.js <practiceId> to list IDs.';
           throw new Error(`AppointmentReasonID is required by Tebra but could not be resolved. ${hint}`);
         }
         // Log the appointment data being sent (required 4.14 fields)
-        console.log('🔍 [TEBRA] Appointment data being sent:', JSON.stringify({
+        this.logSoapDebug('🔍 [TEBRA] Appointment data being sent:', {
           PracticeID: appointment.PracticeID,
           ServiceLocationID: appointment.ServiceLocationID,
           StartTime: appointment.StartTime,
@@ -2470,7 +2508,7 @@ ${appointmentXml}
           ProviderID: appointment.ProviderID,
           ResourceID: appointment.ResourceID,
           ResourceIds: appointment.ResourceIds
-        }, null, 2));
+        });
         
         let rawXml, parsed, appointmentId;
         const errTranslate = 'Error translating AppointmentCreate to CreateAppointmentV3Request';
@@ -2499,11 +2537,11 @@ ${appointmentXml}
               payload.AppointmentReasonID = parseInt(String(defaultId), 10);
             }
           }
-          console.log(`🔄 [TEBRA] CreateAppointment attempt: ${variant.label}`);
+          this.logSoapDebug('🔄 [TEBRA] CreateAppointment attempt:', variant.label);
 
           rawXml = await this.callRawSOAPMethod('CreateAppointment', payload, {});
           const xmlPreview = typeof rawXml === 'string' && rawXml.length > 500 ? rawXml.substring(0, 500) + '...' : rawXml;
-          console.log('🔍 [TEBRA] Raw CreateAppointment XML response (preview):', xmlPreview);
+          this.logSoapDebug('🔍 [TEBRA] Raw CreateAppointment XML response (preview):', xmlPreview);
 
           parsed = this.parseRawSOAPResponse(rawXml, 'CreateAppointment');
           const appointmentNode = parsed?.CreateAppointmentResult?.Appointment || {};
@@ -2523,7 +2561,7 @@ ${appointmentXml}
             const idMatch = rawXml.match(/<AppointmentID[^>]*>([^<]+)<\/AppointmentID>/i) || rawXml.match(/<AppointmentId[^>]*>([^<]+)<\/AppointmentId>/i);
             if (idMatch && idMatch[1]) {
               appointmentId = idMatch[1].trim();
-              console.log(`✅ [TEBRA] Extracted AppointmentID from raw XML using regex: ${appointmentId}`);
+              this.logSoapDebug('✅ [TEBRA] Extracted AppointmentID from raw XML using regex:', appointmentId);
             }
             const errorMatch = rawXml.match(/<ErrorMessage[^>]*>([\s\S]*?)<\/ErrorMessage>/i);
             const errorMsg = errorMatch && errorMatch[1] ? errorMatch[1].trim() : null;
@@ -2561,7 +2599,7 @@ ${appointmentXml}
 
         // Fallback: try node-soap CreateAppointmentAsync when raw SOAP fails all variants (WSDL-shaped XML may satisfy CreateAppointmentV3)
         try {
-          console.log('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP retries exhausted)');
+          this.logSoapDebug('🔄 [TEBRA] Trying node-soap CreateAppointmentAsync (raw SOAP retries exhausted)', {});
           const client = await this.getClient();
           const args = { request: { RequestHeader: this.buildRequestHeader(), Appointment: lastPayload || appointment } };
           this.cleanRequestData(args);
@@ -2667,9 +2705,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("CreateAppointment args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('CreateAppointment args:', args);
       const [result] = await client.CreateAppointmentAsync(args);
-      console.log("CreateAppointment result:", result);
+      this.logSoapDebug('CreateAppointment result:', result);
       return this.normalizeCreateAppointmentResponse(result);
     } catch (error) {
       console.error('Tebra SOAP: CreateAppointment error', error.message);
@@ -2679,7 +2717,7 @@ ${appointmentXml}
 
   async deleteAppointment(appointmentId) {
     try {
-      console.log(`❌ [TEBRA SERVICE] Deleting appointment ${appointmentId}`);
+      this.logSoapDebug('❌ [TEBRA SERVICE] Deleting appointment:', appointmentId);
       // Coerce numeric string IDs to integers to match SOAP type expectations
       const appointmentIdToUse = (typeof appointmentId === 'string' && /^\d+$/.test(appointmentId)) ? parseInt(appointmentId, 10) : appointmentId;
 
@@ -2705,9 +2743,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("DeleteAppointment args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('DeleteAppointment args:', args);
       const [result] = await client.DeleteAppointmentAsync(args);
-      console.log("DeleteAppointment result:", result);
+      this.logSoapDebug('DeleteAppointment result:', result);
       
       // Return success structure
       return { success: true, message: 'Appointment deleted successfully', appointmentId: appointmentIdToUse };
@@ -2729,26 +2767,28 @@ ${appointmentXml}
         });
       }
 
-      // Generate and log raw SOAP XML for debugging (but don't send it)
-      try {
-        const appointmentPayload = { Appointment: { AppointmentId: appointmentId } };
-        const rawXml = this.generateRawSOAPXML('DeleteAppointment', appointmentPayload, {});
-        console.error('🔍 Generated raw SOAP XML for DeleteAppointment (debug):\n', rawXml);
-      } catch (xmlErr) {
-        console.error('Failed to generate raw SOAP XML for debugging:', xmlErr && xmlErr.message ? xmlErr.message : xmlErr);
-      }
+      if (this.shouldLogSoap()) {
+        // Generate and log raw SOAP XML for debugging (but don't send it)
+        try {
+          const appointmentPayload = { Appointment: { AppointmentId: appointmentId } };
+          const rawXml = this.generateRawSOAPXML('DeleteAppointment', appointmentPayload, {});
+          this.logSoapDebug('🔍 Generated raw SOAP XML for DeleteAppointment (debug):', rawXml);
+        } catch (xmlErr) {
+          console.error('Failed to generate raw SOAP XML for debugging:', xmlErr && xmlErr.message ? xmlErr.message : xmlErr);
+        }
 
-      // If soap client exists, log lastRequest/lastResponse for further clues
-      try {
-        const client = await this.getClient();
-        if (client && client.lastRequest) {
-          console.error('🔍 SOAP client lastRequest:\n', client.lastRequest);
+        // If soap client exists, log lastRequest/lastResponse for further clues
+        try {
+          const client = await this.getClient();
+          if (client && client.lastRequest) {
+            this.logSoapDebug('🔍 SOAP client lastRequest:', client.lastRequest);
+          }
+          if (client && client.lastResponse) {
+            this.logSoapDebug('🔍 SOAP client lastResponse:', client.lastResponse);
+          }
+        } catch (cliErr) {
+          console.error('Failed to log SOAP client lastRequest/lastResponse:', cliErr && cliErr.message ? cliErr.message : cliErr);
         }
-        if (client && client.lastResponse) {
-          console.error('🔍 SOAP client lastResponse:\n', client.lastResponse);
-        }
-      } catch (cliErr) {
-        console.error('Failed to log SOAP client lastRequest/lastResponse:', cliErr && cliErr.message ? cliErr.message : cliErr);
       }
 
       // Throw a more descriptive error
@@ -2761,7 +2801,7 @@ ${appointmentXml}
 
   async updateAppointment(appointmentId, updates) {
     try {
-      console.log(`✏️ [TEBRA SERVICE] Updating appointment ${appointmentId}`);
+      this.logSoapDebug('✏️ [TEBRA SERVICE] Updating appointment:', appointmentId);
 
       // Coerce numeric string IDs to integers to match SOAP type expectations
       const appointmentIdToUse = (typeof appointmentId === 'string' && /^\d+$/.test(appointmentId)) ? parseInt(appointmentId, 10) : appointmentId;
@@ -2845,34 +2885,40 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
 
-      console.log("UpdateAppointment args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('UpdateAppointment args:', args);
       const [result] = await client.UpdateAppointmentAsync(args);
-      console.log("UpdateAppointment result:", result);
+      this.logSoapDebug('UpdateAppointment result:', result);
       return this.normalizeGetAppointmentResponse(result);
     } catch (error) {
       console.error('❌ Tebra SOAP: UpdateAppointment error', error && error.message ? error.message : error);
       if (error && error.stack) console.error('Stack:', error.stack);
       if (error && error.response && error.response.data) console.error('Upstream response data:', error.response.data);
 
-      // Generate and log raw SOAP XML for debugging (do not send)
-      try {
-        const rawXml = this.generateRawSOAPXML('UpdateAppointment', appointmentPayload && appointmentPayload.Appointment ? appointmentPayload.Appointment : updates, {});
-        console.error('🔍 Generated raw SOAP XML for UpdateAppointment (debug):\n', rawXml);
-      } catch (xmlErr) {
-        console.error('Failed to generate raw SOAP XML for debugging:', xmlErr && xmlErr.message ? xmlErr.message : xmlErr);
-      }
+      if (this.shouldLogSoap()) {
+        // Generate and log raw SOAP XML for debugging (do not send)
+        try {
+          const rawXml = this.generateRawSOAPXML(
+            'UpdateAppointment',
+            appointmentPayload && appointmentPayload.Appointment ? appointmentPayload.Appointment : updates,
+            {}
+          );
+          this.logSoapDebug('🔍 Generated raw SOAP XML for UpdateAppointment (debug):', rawXml);
+        } catch (xmlErr) {
+          console.error('Failed to generate raw SOAP XML for debugging:', xmlErr && xmlErr.message ? xmlErr.message : xmlErr);
+        }
 
-      // If soap client exists, log lastRequest/lastResponse for further clues
-      try {
-        const client = await this.getClient();
-        if (client && client.lastRequest) {
-          console.error('🔍 SOAP client lastRequest:\n', client.lastRequest);
+        // If soap client exists, log lastRequest/lastResponse for further clues
+        try {
+          const client = await this.getClient();
+          if (client && client.lastRequest) {
+            this.logSoapDebug('🔍 SOAP client lastRequest:', client.lastRequest);
+          }
+          if (client && client.lastResponse) {
+            this.logSoapDebug('🔍 SOAP client lastResponse:', client.lastResponse);
+          }
+        } catch (cliErr) {
+          console.error('Failed to log SOAP client lastRequest/lastResponse:', cliErr && cliErr.message ? cliErr.message : cliErr);
         }
-        if (client && client.lastResponse) {
-          console.error('🔍 SOAP client lastResponse:\n', client.lastResponse);
-        }
-      } catch (cliErr) {
-        console.error('Failed to log SOAP client lastRequest/lastResponse:', cliErr && cliErr.message ? cliErr.message : cliErr);
       }
 
       const enhancedError = new Error(`Failed to update appointment ${appointmentId}: ${error.message}`);
@@ -2906,9 +2952,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("CreateAppointmentReason args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('CreateAppointmentReason args:', args);
       const [result] = await client.CreateAppointmentReasonAsync(args);
-      console.log("CreateAppointmentReason result:", result);
+      this.logSoapDebug('CreateAppointmentReason result:', result);
       return this.normalizeCreateAppointmentReasonResponse(result);
     } catch (error) {
       console.error('Tebra SOAP: CreateAppointmentReason error', error.message);
@@ -2922,7 +2968,7 @@ ${appointmentXml}
       if (this.useRawSOAP) {
         const rawXml = await this.callRawSOAPMethod('GetAppointmentReasons', { PracticeId: practiceId }, {});
         if (process.env.DEBUG_TEBRA_RAW === 'GetAppointmentReasons') {
-          console.log('[DEBUG_TEBRA_RAW] GetAppointmentReasons response (preview):', String(rawXml).slice(0, 4000));
+          this.logSoapDebug('[DEBUG_TEBRA_RAW] GetAppointmentReasons response (preview):', String(rawXml).slice(0, 4000), { maxLength: 4000 });
         }
         const parsed = this.parseRawSOAPResponse(rawXml, 'GetAppointmentReasons');
         return this.normalizeGetAppointmentReasonsResponse(parsed);
@@ -2941,9 +2987,9 @@ ${appointmentXml}
       // Remove undefined/null values to avoid sending '?' placeholders
       this.cleanRequestData(args);
       
-      console.log("GetAppointmentReasons args:", JSON.stringify(args, null, 2));
+      this.logSoapArgs('GetAppointmentReasons args:', args);
       const [result] = await client.GetAppointmentReasonsAsync(args);
-      console.log("GetAppointmentReasons result:", result);
+      this.logSoapDebug('GetAppointmentReasons result:', result);
       return this.normalizeGetAppointmentReasonsResponse(result);
     } catch (error) {
       console.error('Tebra SOAP: GetAppointmentReasons error', error.message);
@@ -2954,7 +3000,7 @@ ${appointmentXml}
   // Helper methods to get Practice and Provider information
   async getPractices(options = {}) {
     try {
-      console.log(`🔍 [TEBRA] Getting practices with options:`, options);
+      this.logSoapDebug('🔍 [TEBRA] Getting practices with options:', options);
       
       // Validate credentials before making request
       if (!this.customerKey || !this.user || !this.password) {
@@ -3008,7 +3054,7 @@ ${appointmentXml}
 
   async getProviders(options = {}) {
     try {
-      console.log(`🔍 [TEBRA] Getting providers with options:`, options);
+      this.logSoapDebug('🔍 [TEBRA] Getting providers with options:', options);
       
       // Use raw SOAP implementation (this was working before)
       const fields = {
@@ -3037,17 +3083,6 @@ ${appointmentXml}
     } catch (error) {
       this.handleSOAPError(error, 'GetProviders', { options });
     }
-  }
-
-  // Get providers with basic fields (matches working client)
-  async getProvidersBasic() {
-    const fields = { Active: 1 };
-    return await this.callMethod('GetProviders', fields);
-  }
-
-  // Get appointments (matches working client)
-  async getAppointmentsBasic() {
-    return await this.callMethod('GetAppointments');
   }
 
   // Availability and Scheduling
@@ -3093,11 +3128,6 @@ ${appointmentXml}
     }
   }
 
-  // Generate SOAP XML based on working template (legacy method)
-  generateSOAPXML(methodName, fields = {}, filters = {}) {
-    return this.generateRawSOAPXML(methodName, fields, filters);
-  }
-
   // Enhanced error handling with better logging
   handleSOAPError(error, methodName, context = {}) {
     console.error(`❌ Tebra SOAP Error in ${methodName}:`, {
@@ -3131,55 +3161,60 @@ ${appointmentXml}
     throw enhancedError;
   }
 
-  // Generic method caller (similar to the client's callMethod)
-  async callMethod(methodName, fields = {}, filters = {}) {
+  shouldLogSoap() {
+    return process.env.TEBRA_DEBUG_SOAP === 'true'
+      || process.env.TEBRA_DEBUG_REQUESTS === 'true'
+      || process.env.TEBRA_DEBUG_RESPONSES === 'true'
+      || process.env.TEBRA_DEBUG_AUTH === 'true';
+  }
+
+  redactSoapXml(xml) {
+    if (typeof xml !== 'string') return xml;
+    return xml
+      .replace(/<(?:\w+:)?CustomerKey>[^<]*<\/(?:\w+:)?CustomerKey>/gi, '<CustomerKey>***</CustomerKey>')
+      .replace(/<(?:\w+:)?Password>[^<]*<\/(?:\w+:)?Password>/gi, '<Password>***</Password>')
+      .replace(/<(?:\w+:)?User>[^<]*<\/(?:\w+:)?User>/gi, '<User>***</User>');
+  }
+
+  redactSoapArgs(args) {
     try {
-      console.log(`🚀 Calling Tebra method: ${methodName}`);
-      
-      if (this.useRawSOAP) {
-        const result = await this.callRawSOAPMethod(methodName, fields, filters);
-        return this.parseRawSOAPResponse(result, methodName);
-      } else {
-        const client = await this.getClient();
-        const args = {
-          request: {
-            RequestHeader: this.buildRequestHeader(),
-            Fields: fields,
-            Filter: filters
-          }
+      const safeArgs = JSON.parse(JSON.stringify(args || {}));
+      if (safeArgs.request && safeArgs.request.RequestHeader) {
+        safeArgs.request.RequestHeader = {
+          CustomerKey: safeArgs.request.RequestHeader.CustomerKey ? '***' : undefined,
+          User: safeArgs.request.RequestHeader.User ? '***' : undefined,
+          Password: safeArgs.request.RequestHeader.Password ? '***' : undefined,
+          ClientVersion: safeArgs.request.RequestHeader.ClientVersion || undefined
         };
-        
-        this.cleanRequestData(args);
-        
-        console.log(`${methodName} args:`, JSON.stringify(args, null, 2));
-        const [result] = await client[`${methodName}Async`](args);
-        console.log(`${methodName} result:`, result);
-        
-        // Use appropriate normalizer based on method name
-        const normalizerMethod = `normalize${methodName}Response`;
-        if (this[normalizerMethod]) {
-          return this[normalizerMethod](result);
-        }
-        
-        return result;
       }
-    } catch (error) {
-      this.handleSOAPError(error, methodName, { fields, filters });
+      return safeArgs;
+    } catch (e) {
+      return { redactionFailed: true };
     }
   }
 
-  // Get configuration info
-  getConfig() {
-    return {
-      wsdlUrl: this.wsdlUrl,
-      soapEndpoint: this.soapEndpoint,
-      practiceName: this.practiceName,
-      user: this.user,
-      namespace: this.namespace,
-      useRawSOAP: this.useRawSOAP,
-      hasCredentials: !!(this.customerKey && this.password && this.user)
-    };
+  logSoapArgs(label, args) {
+    if (!this.shouldLogSoap()) return;
+    const safeArgs = this.redactSoapArgs(args);
+    console.log(label, JSON.stringify(safeArgs, null, 2));
   }
+
+  logSoapDebug(label, payload, options = {}) {
+    if (!this.shouldLogSoap()) return;
+    const maxLength = options.maxLength || 2000;
+    if (typeof payload === 'string') {
+      const redacted = this.redactSoapXml(payload);
+      const preview = redacted.length > maxLength ? `${redacted.slice(0, maxLength)}...` : redacted;
+      console.log(label, preview);
+      return;
+    }
+    try {
+      console.log(label, JSON.stringify(payload, null, 2));
+    } catch (error) {
+      console.log(label, payload);
+    }
+  }
+
 
   unwrap(obj) {
     if (!obj) return {};
