@@ -1,13 +1,14 @@
 // backend/src/controllers/shopifyStorefrontAuthController.js
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
+const { normalizeShopifyDomain } = require('../utils/shopifyDomain');
 const { getFormattedLocation } = require('../utils/locationUtils');
 const storefrontQueries = require('./shopifyStorefrontAuthQueries');
 
 class ShopifyStorefrontAuthController {
   constructor() {
     // Support both new and legacy env var names to reduce setup friction
-    this.storeDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_STORE;
+    this.storeDomain = normalizeShopifyDomain(process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_STORE);
     this.storefrontAccessToken = process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
     this.apiVersion = process.env.SHOPIFY_API_VERSION || '2025-07';
     this.graphqlUrl = this.storeDomain ? `https://${this.storeDomain}/api/${this.apiVersion}/graphql.json` : null;
@@ -356,6 +357,14 @@ class ShopifyStorefrontAuthController {
         return res.status(500).json({
           success: false,
           message: 'Server configuration error - JWT secret missing'
+        });
+      }
+
+      if (!process.env.SHOPIFY_ACCESS_TOKEN || !this.storeDomain) {
+        return res.status(500).json({
+          success: false,
+          message: 'Shopify Admin API configuration is missing',
+          location: clientLocation
         });
       }
 

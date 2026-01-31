@@ -6,13 +6,14 @@ const router = express.Router();
 const { auth } = require('../middleware/shopifyTokenAuth');
 const productUtils = require('../utils/productUtils');
 const shopifyUserService = require('../services/shopifyUserService');
+const { getShopifyDomain } = require('../utils/shopifyDomain');
 const tebraService = require('../services/tebraService');
 const questionnaireCompletionService = require('../services/questionnaireCompletionService');
 const axios = require('axios');
 
 // Shopify Admin API configuration
 const SHOPIFY_CONFIG = {
-  shopDomain: process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN,
+  shopDomain: getShopifyDomain(),
   accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
   apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01'
 };

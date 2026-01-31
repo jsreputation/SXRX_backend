@@ -83,7 +83,8 @@ const frontendOrigin = normalizeOrigin(process.env.FRONTEND_URL);
 if (frontendOrigin) allowedOrigins.add(frontendOrigin);
 
 // - Allow the permanent Shopify domain if provided in env
-const shopDomain = process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN;
+const { getShopifyDomain } = require('./utils/shopifyDomain');
+const shopDomain = getShopifyDomain();
 const shopOrigin = normalizeOrigin(shopDomain);
 if (shopOrigin) allowedOrigins.add(shopOrigin);
 
@@ -340,9 +341,9 @@ app.get('/health', async (req, res) => {
 
   // Check Shopify API connectivity (optional, non-blocking)
   try {
-    if (process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_ACCESS_TOKEN) {
+    if (shopDomain && process.env.SHOPIFY_ACCESS_TOKEN) {
       const axios = require('axios');
-      const shopifyUrl = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/2024-01/shop.json`;
+      const shopifyUrl = `https://${shopDomain}/admin/api/2024-01/shop.json`;
       const shopifyResponse = await Promise.race([
         axios.get(shopifyUrl, {
           headers: {
@@ -464,8 +465,8 @@ const server = app.listen(PORT, () => {
   
   // Validate critical environment variables
   console.log('\n🔍 [STARTUP] Checking critical environment variables...');
-  if (process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN) {
-    console.log(`✅ SHOPIFY_STORE: ${process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN}`);
+  if (shopDomain) {
+    console.log(`✅ SHOPIFY_STORE: ${shopDomain}`);
   } else {
     console.log('❌ SHOPIFY_STORE or SHOPIFY_STORE_DOMAIN: NOT SET');
   }

@@ -2,10 +2,11 @@
 const axios = require('axios');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { getShopifyDomain } = require('../utils/shopifyDomain');
 
 // Shopify configuration
 const SHOPIFY_CONFIG = {
-  shopDomain: process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN,
+  shopDomain: getShopifyDomain(),
   accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
   apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01'
 };
@@ -13,7 +14,11 @@ const SHOPIFY_CONFIG = {
 // Helper function to make authenticated Shopify API calls
 async function makeShopifyRequest(endpoint, method = 'GET', data = null) {
   try {
-    const url = `https://${SHOPIFY_CONFIG.shopDomain}/admin/api/${SHOPIFY_CONFIG.apiVersion}/${endpoint}`;
+    const domain = getShopifyDomain();
+    if (!domain) {
+      throw new Error('Shopify domain is not configured');
+    }
+    const url = `https://${domain}/admin/api/${SHOPIFY_CONFIG.apiVersion}/${endpoint}`;
     const config = {
       method,
       url,

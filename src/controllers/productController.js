@@ -1,6 +1,7 @@
 const moment = require('moment-timezone');
 const axios = require('axios');
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+const { getShopifyDomain } = require('../utils/shopifyDomain');
+const SHOPIFY_STORE = getShopifyDomain();
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 exports.getProducts = async (req, res) => {
     try {

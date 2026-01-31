@@ -260,8 +260,10 @@ function isSubscriptionProduct(product) {
   return tags.includes('subscription-monthly') || tags.includes('subscription');
 }
 
+const { getShopifyDomain } = require('../utils/shopifyDomain');
+
 const SHOPIFY_CONFIG = {
-  shopDomain: process.env.SHOPIFY_STORE || process.env.SHOPIFY_STORE_DOMAIN,
+  shopDomain: getShopifyDomain(),
   accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
   apiVersion: process.env.SHOPIFY_API_VERSION || '2024-01'
 };

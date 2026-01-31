@@ -9,6 +9,7 @@
 
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
+const { getShopifyDomain } = require('../utils/shopifyDomain');
 
 const tokenCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
@@ -76,7 +77,7 @@ async function verifyShopifyCustomerToken(customerAccessToken) {
   const cached = cacheGet(`sfc:${customerAccessToken}`);
   if (cached) return cached;
 
-  const storeDomain = process.env.SHOPIFY_STORE_DOMAIN || process.env.SHOPIFY_STORE;
+  const storeDomain = getShopifyDomain();
   const sfToken = process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN;
   const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-10';
   if (!storeDomain || !sfToken) return null;
